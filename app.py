@@ -6,12 +6,11 @@ app = Flask(__name__)
 
 # === Email Configuration for Custom SMTP ===
 app.config['MAIL_SERVER'] = 'mail.mylifeline.world'
-app.config['MAIL_PORT'] = 587  # Use 465 if your SMTP requires SSL
-app.config['MAIL_USE_TLS'] = True  # Use True for STARTTLS
-app.config['MAIL_USE_SSL'] = False
-app.config['MAIL_USERNAME'] = os.getenv("EMAIL_USER")  # e.g. insurance@mylifeline.world
-app.config['MAIL_PASSWORD'] = os.getenv("EMAIL_PASS")
-app.config['MAIL_DEFAULT_SENDER'] = os.getenv("EMAIL_USER")
+app.config['MAIL_PORT'] = 587  # or 465 for SSL
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = 'Justiceofficial0010@gmail.com'  # or custom domain email
+app.config['MAIL_PASSWORD'] = 'zogo itjd vjdr yshl'
+app.config['MAIL_DEFAULT_SENDER'] = ('My Lifeline', 'Justiceofficial0010@gmail.com')
 
 mail = Mail(app)
 
