@@ -84,7 +84,7 @@ def submit():
     msg = Message(
         subject=f"New {data_type.title()} Insurance Request from LifeLine Africa",
         recipients=[
-            "j.chukwuony@alustudents.com", "insurer2@example.com", "insurer3@example.com",
+            "j.chukwuony@alustudent.com", "insurer2@example.com", "insurer3@example.com",
             "insurer4@example.com", "insurer5@example.com"
         ],
         cc=["cc_insurer@example.com"],
