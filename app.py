@@ -5,7 +5,7 @@ import os
 app = Flask(__name__)
 
 # === Email Configuration for Custom SMTP ===
-app.config['MAIL_SERVER'] = 'mail.mylifeline.world'
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
 app.config['MAIL_PORT'] = 587  # or 465 for SSL
 app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_USERNAME'] = 'Justiceofficial0010@gmail.com'  # or custom domain email
