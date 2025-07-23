@@ -6,9 +6,9 @@ app = Flask(__name__)
 
 # === Email Configuration for Custom SMTP ===
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-app.config['MAIL_PORT'] = 587  # or 465 for SSL
+app.config['MAIL_PORT'] = 587
 app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = 'Justiceofficial0010@gmail.com'  # or custom domain email
+app.config['MAIL_USERNAME'] = 'Justiceofficial0010@gmail.com'
 app.config['MAIL_PASSWORD'] = 'zogo itjd vjdr yshl'
 app.config['MAIL_DEFAULT_SENDER'] = ('My Lifeline', 'Justiceofficial0010@gmail.com')
 
@@ -41,7 +41,7 @@ company_fields = [
     "Preferred Mode of Healthcare"
 ]
 
-# === HTML Email Builder ===
+# === Modern Email HTML Builder ===
 def build_email_html(data_type, data):
     fields = individual_fields if data_type == "individual" else company_fields
 
@@ -58,22 +58,30 @@ def build_email_html(data_type, data):
         )
         value = data.get(field_key, 'N/A')
         rows += (
-            f"<tr><td style='padding:8px;border:1px solid #ccc;'><strong>{field}</strong></td>"
-            f"<td style='padding:8px;border:1px solid #ccc;'>{value}</td></tr>"
+            f"<tr>"
+            f"<td style='padding:10px 15px;font-weight:600;color:#333;border-bottom:1px solid #eee;width:45%;'>{field}</td>"
+            f"<td style='padding:10px 15px;color:#555;border-bottom:1px solid #eee;'>{value}</td>"
+            f"</tr>"
         )
 
     return f"""
-    <div style="font-family:sans-serif;max-width:600px;margin:auto;border:1px solid #eaeaea;border-radius:10px;">
-        <div style="background:#fff;padding:20px;text-align:center;border-bottom:1px solid #eaeaea;">
-            <img src="data:image/png;base64,{logo_base64}" width="70" style="margin-bottom:10px;" />
-            <h2 style="margin:0;color:#333;">New Insurance Request</h2>
-        </div>
-        <div style="padding:20px;">
-            <p>Dear Insurance Partner,</p>
-            <p>We have received a new <strong>{data_type.title()}</strong> insurance interest form via the LifeLine Africa platform.</p>
-            <p>Kindly find the client’s submitted details below:</p>
-            <table style="width:100%;border-collapse:collapse;margin-top:10px;">{rows}</table>
-            <p style="margin-top:20px;">Warm regards,<br><strong>LifeLine Africa Team</strong></p>
+    <div style="background:#f4f4f7;padding:40px 20px;">
+        <div style="max-width:650px;margin:0 auto;background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,0.05);font-family:sans-serif;">
+            <div style="text-align:center;padding:30px 20px 10px;">
+                <img src="data:image/png;base64,{logo_base64}" width="70" alt="LifeLine Logo" style="margin-bottom:15px;" />
+                <h2 style="font-size:22px;margin:0;color:#222;">New Insurance Request</h2>
+            </div>
+            <div style="padding:20px 30px;">
+                <p style="font-size:15px;color:#444;">Dear Insurance Partner,</p>
+                <p style="font-size:15px;color:#444;">
+                    We have received a new <strong>{data_type.title()}</strong> insurance interest form via the LifeLine Africa platform.
+                    Kindly find the client’s submitted details below:
+                </p>
+                <table style="width:100%;margin-top:20px;border-collapse:collapse;border-radius:6px;overflow:hidden;background:#fff;">
+                    {rows}
+                </table>
+                <p style="font-size:14px;color:#555;margin-top:30px;">Warm regards,<br><strong>LifeLine Africa Team</strong></p>
+            </div>
         </div>
     </div>
     """
