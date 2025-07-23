@@ -112,8 +112,8 @@ def submit():
     msg = Message(
         subject=f"New {data_type.title()} Insurance Request",
         recipients=[
-            "j.chukwuony@alustudent.com",
-            "kingdavidscloud@gmail.com "
+            "j.chukwuony@alustudent.com"
+            # "kingdavidscloud@gmail.com "
         ],
         cc=["cc_insurer@example.com"],
         html=email_html
