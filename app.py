@@ -16,7 +16,7 @@ mail = Mail(app)
 
 # === Load logo image in base64 ===
 with open("logo_base64.txt", "r") as f:
-    logo_base64 = f.read()
+    logo_base64 = f.read().replace('\n', '').strip()
 
 # === Fields for Each Type ===
 individual_fields = [
