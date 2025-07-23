@@ -49,7 +49,7 @@ def build_email_html_link(submission_id):
         <img src="https://i.imgur.com/i6Lfiku.png" width="100" style="margin-bottom:20px;" alt="LifeLine Logo" />
         <h2 style="color:#333;">New Insurance Request</h2>
         <p style="color:#555;">A new insurance request has been submitted via LifeLine Africa.</p>
-        <a href="{view_link}" style="display:inline-block;margin-top:20px;padding:12px 25px;background:#F57C00;color:white;text-decoration:none;border-radius:6px;">
+        <a href="{view_link}" style="display:inline-block;margin-top:20px;padding:12px 25px;background:#e99407;color:white;text-decoration:none;border-radius:6px;">
             View Submission
         </a>
         <p style="margin-top:40px;color:#888;">LifeLine Africa Team</p>
