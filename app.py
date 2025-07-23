@@ -1,7 +1,5 @@
 from flask import Flask, request, jsonify, render_template_string, send_file
-from flask_mail import Mail, Message
 from flask_sqlalchemy import SQLAlchemy
-from werkzeug.security import generate_password_hash
 import os
 import uuid
 import json
@@ -9,60 +7,45 @@ from datetime import datetime
 import logging
 from typing import Dict, Any, Optional
 import io
-from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.pagesizes import A4, inch
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
-from reportlab.pdfgen import canvas
-import base64
-import urllib.request
+from reportlab.lib.enums import TA_CENTER
+import click
+from flask.cli import with_appcontext
+from dotenv import load_dotenv
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
-# === Application Configuration ===
-app = Flask(__name__)
+load_dotenv()
 
-# Database Configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv(
-    'DATABASE_URL', 
-    'postgresql://username:password@server.postgres.database.azure.com:5432/database_name'
-)
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_pre_ping': True,
-    'pool_recycle': 300,
-}
+# Initialize extensions
+db = SQLAlchemy()
 
-# Email Configuration
-app.config.update(
-    MAIL_SERVER='smtp.gmail.com',
-    MAIL_PORT=587,
-    MAIL_USE_TLS=True,
-    MAIL_USERNAME=os.getenv('MAIL_USERNAME', 'Justiceofficial0010@gmail.com'),
-    MAIL_PASSWORD=os.getenv('MAIL_PASSWORD', 'zogo itjd vjdr yshl'),
-    MAIL_DEFAULT_SENDER=('My Lifeline Africa', os.getenv('MAIL_USERNAME', 'Justiceofficial0010@gmail.com'))
-)
+# Email configuration
+SMTP_SERVER = 'smtp.gmail.com'
+SMTP_PORT = 465
+SMTP_USERNAME = 'J.chukwuony@alustudent.com'
+SMTP_PASSWORD = 'ljol rjet wgyg fgbe'
 
-# Security Configuration
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
-
-# Initialize Extensions
-db = SQLAlchemy(app)
-mail = Mail(app)
-
-# Configure Logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s %(levelname)s %(name)s %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Email recipients configuration
+PRIMARY_RECIPIENTS = [
+    "recipient1@example.com",
+    "recipient2@example.com",
+    "recipient3@example.com",
+    "recipient4@example.com",
+    "recipient5@example.com"
+]
+CC_RECIPIENT = "j.chukwuony@alustudent.com"
 
 # === Database Models ===
 class InsuranceSubmission(db.Model):
     __tablename__ = 'insurance_submissions'
     
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    submission_type = db.Column(db.String(20), nullable=False)  # 'individual' or 'company'
+    submission_type = db.Column(db.String(20), nullable=False)
     submission_data = db.Column(db.JSON, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -106,16 +89,49 @@ COMPANY_FIELDS = [
     "Preferred Mode of Healthcare"
 ]
 
-# === Utility Functions ===
+logger = logging.getLogger(__name__)
+
+def create_app():
+    """Application factory function."""
+    app = Flask(__name__)
+    
+    # Configuration
+    app.config.update(
+        SQLALCHEMY_DATABASE_URI='sqlite:///' + os.path.join(app.instance_path, 'insurance.db'),
+        SQLALCHEMY_TRACK_MODIFICATIONS=False,
+        SQLALCHEMY_ENGINE_OPTIONS={
+            'pool_pre_ping': True,
+            'pool_recycle': 300,
+        },
+        SECRET_KEY=os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
+    )
+    
+    # Initialize extensions with app
+    db.init_app(app)
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s %(name)s %(message)s'
+    )
+    
+    # Register CLI commands
+    app.cli.add_command(init_db_command)
+    
+    # Register routes
+    register_routes(app)
+    
+    return app
+
 def normalize_field_key(field: str) -> str:
     """Normalize field names to match form data keys."""
     return (field.replace("(", "")
-                 .replace(")", "")
-                 .replace("/", "")
-                 .replace(",", "")
-                 .replace("  ", " ")
-                 .replace(" ", "_")
-                 .lower())
+                .replace(")", "")
+                .replace("/", "")
+                .replace(",", "")
+                .replace("  ", " ")
+                .replace(" ", "_")
+                .lower())
 
 def get_fields_for_type(submission_type: str) -> list:
     """Get field list based on submission type."""
@@ -129,7 +145,6 @@ def validate_submission_data(submission_type: str, data: Dict[str, Any]) -> tupl
     if not data:
         return False, "Submission data cannot be empty."
     
-    # Add more specific validation as needed
     required_fields = ["full_name"] if submission_type == "individual" else ["company_name"]
     
     for field in required_fields:
@@ -138,12 +153,33 @@ def validate_submission_data(submission_type: str, data: Dict[str, Any]) -> tupl
     
     return True, ""
 
-# === Email HTML Generation ===
+def send_email(subject: str, html_content: str, recipients: list, cc: list = None):
+    """Send email using SMTP_SSL."""
+    msg = MIMEMultipart()
+    msg['From'] = f"My Lifeline Africa <{SMTP_USERNAME}>"
+    msg['To'] = ", ".join(recipients)
+    msg['Subject'] = subject
+    
+    if cc:
+        msg['Cc'] = ", ".join(cc)
+        recipients = recipients + cc
+    
+    msg.attach(MIMEText(html_content, 'html'))
+    
+    try:
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg)
+        logger.info("Email sent successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email: {str(e)}")
+        return False
+
 def build_email_html_with_data(submission_type: str, data: Dict[str, Any], submission_id: str) -> str:
     """Build HTML email with submission data included."""
     fields = get_fields_for_type(submission_type)
     
-    # Build data rows
     data_rows = ""
     for field in fields:
         field_key = normalize_field_key(field)
@@ -155,7 +191,6 @@ def build_email_html_with_data(submission_type: str, data: Dict[str, Any], submi
             </tr>
         """
     
-    # PDF download link
     pdf_link = f"http://localhost:5000/download-pdf/{submission_id}"
     
     return f"""
@@ -168,39 +203,25 @@ def build_email_html_with_data(submission_type: str, data: Dict[str, Any], submi
     </head>
     <body style="margin:0;padding:0;font-family:Arial,sans-serif;background:#f5f5f5;">
         <div style="max-width:700px;margin:20px auto;background:white;border-radius:8px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
-            
-            <!-- Header -->
-            <div style="background:linear-gradient(135deg,#fea601,#ff8c00);padding:30px;text-align:center;">
-                <img src="https://i.imgur.com/i6Lfiku.png" width="80" alt="LifeLine Logo" style="margin-bottom:15px;" />
-                <h1 style="color:white;margin:0;font-size:24px;">New Insurance Request</h1>
-                <p style="color:rgba(255,255,255,0.9);margin:10px 0 0 0;">Submission Type: {submission_type.title()}</p>
-            </div>
-            
-            <!-- Content -->
+    <div style="background:white;padding:20px 30px 15px 30px;text-align:center;">
+        <img src="https://i.imgur.com/i6Lfiku.png" width="80" alt="LifeLine Logo" style="display:block;margin:0 auto 5px auto;" />
+        <h1 style="color:linear-gradient(135deg,#fea601,#ff8c00);margin:0;font-size:24px;line-height:1.3;">New Insurance Request</h1>
+        <p style="linear-gradient(135deg,#fea601,#ff8c00);margin:5px 0 0 0;font-size:14px;">Submission Type: {submission_type.title()}</p>
+    </div>
             <div style="padding:30px;">
                 <p style="color:#555;margin-bottom:25px;font-size:16px;">
                     A new {submission_type} insurance request has been submitted via LifeLine Africa. 
                     Please find the details below:
                 </p>
-                
-                <!-- Data Table -->
                 <table style="width:100%;border-collapse:collapse;margin:20px 0;border:1px solid #eee;border-radius:6px;overflow:hidden;">
                     {data_rows}
                 </table>
-                
-                <!-- Action Buttons -->
                 <div style="text-align:center;margin:30px 0;">
                     <a href="{pdf_link}" 
                        style="display:inline-block;margin:0 10px;padding:12px 25px;background:#fea601;color:white;text-decoration:none;border-radius:6px;font-weight:bold;">
-                        📄 Download PDF
-                    </a>
-                    <a href="http://localhost:5000/submission/{submission_id}" 
-                       style="display:inline-block;margin:0 10px;padding:12px 25px;background:#28a745;color:white;text-decoration:none;border-radius:6px;font-weight:bold;">
-                        👁️ View Online
+                        Download PDF
                     </a>
                 </div>
-                
-                <!-- Submission Info -->
                 <div style="background:#f8f9fa;padding:20px;border-radius:6px;margin-top:25px;">
                     <p style="margin:0;color:#666;font-size:14px;">
                         <strong>Submission ID:</strong> {submission_id}<br>
@@ -208,21 +229,17 @@ def build_email_html_with_data(submission_type: str, data: Dict[str, Any], submi
                     </p>
                 </div>
             </div>
-            
-            <!-- Footer -->
             <div style="background:#f8f9fa;padding:20px;text-align:center;border-top:1px solid #eee;">
                 <p style="margin:0;color:#888;font-size:14px;">
                     LifeLine Africa Insurance Services<br>
                     This is an automated notification. Please do not reply to this email.
                 </p>
             </div>
-            
         </div>
     </body>
     </html>
     """
 
-# === PDF Generation ===
 class PDFGenerator:
     def __init__(self):
         self.styles = getSampleStyleSheet()
@@ -260,25 +277,16 @@ class PDFGenerator:
             bottomMargin=18
         )
         
-        # Build document content
         story = []
         
-        # Header with logo (if available)
         try:
-            # You can replace this with a local logo file path
             logo_url = "https://i.imgur.com/i6Lfiku.png"
-            # For production, store logo locally and use file path
-            # logo = Image(logo_path, width=2*inch, height=1*inch)
-            # story.append(logo)
-            # story.append(Spacer(1, 20))
         except:
             pass
         
-        # Title
         title = Paragraph(f"{submission_type.title()} Insurance Submission", self.styles['CustomTitle'])
         story.append(title)
         
-        # Submission info
         subtitle = Paragraph(f"Submission ID: {submission_id}", self.styles['CustomSubtitle'])
         story.append(subtitle)
         
@@ -286,16 +294,14 @@ class PDFGenerator:
         story.append(date_para)
         story.append(Spacer(1, 30))
         
-        # Data table
         fields = get_fields_for_type(submission_type)
-        table_data = [['Field', 'Value']]  # Header row
+        table_data = [['Field', 'Value']]
         
         for field in fields:
             field_key = normalize_field_key(field)
             value = str(data.get(field_key, 'N/A'))
             table_data.append([field, value])
         
-        # Create table
         table = Table(table_data, colWidths=[3*inch, 4*inch])
         table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#fea601')),
@@ -315,254 +321,154 @@ class PDFGenerator:
         story.append(table)
         story.append(Spacer(1, 30))
         
-        # Footer
         footer = Paragraph("Generated by LifeLine Africa Insurance Services", self.styles['Normal'])
         story.append(footer)
         
-        # Build PDF
         doc.build(story)
         buffer.seek(0)
         return buffer
 
-# === Database Operations ===
-class DatabaseService:
-    @staticmethod
-    def save_submission(submission_type: str, data: Dict[str, Any]) -> str:
-        """Save submission to database."""
+def register_routes(app):
+    @app.route("/submit", methods=["POST"])
+    def submit():
+        """Handle insurance submission with email, PDF, and database storage."""
         try:
+            content = request.json
+            submission_type = content.get("type")
+            data = content.get("data")
+            
+            is_valid, error_message = validate_submission_data(submission_type, data)
+            if not is_valid:
+                return jsonify({"error": error_message}), 400
+            
+            # Save to database
             submission = InsuranceSubmission(
                 submission_type=submission_type,
                 submission_data=data
             )
             db.session.add(submission)
             db.session.commit()
-            logger.info(f"Submission saved with ID: {submission.id}")
-            return submission.id
-        except Exception as e:
-            db.session.rollback()
-            logger.error(f"Error saving submission: {str(e)}")
-            raise
-    
-    @staticmethod
-    def get_submission(submission_id: str) -> Optional[InsuranceSubmission]:
-        """Retrieve submission by ID."""
-        try:
-            return InsuranceSubmission.query.get(submission_id)
-        except Exception as e:
-            logger.error(f"Error retrieving submission {submission_id}: {str(e)}")
-            return None
-    
-    @staticmethod
-    def update_submission_status(submission_id: str, email_sent: bool = None, pdf_generated: bool = None):
-        """Update submission status flags."""
-        try:
-            submission = InsuranceSubmission.query.get(submission_id)
-            if submission:
-                if email_sent is not None:
-                    submission.email_sent = email_sent
-                if pdf_generated is not None:
-                    submission.pdf_generated = pdf_generated
-                submission.updated_at = datetime.utcnow()
+            
+            # Generate and send email with data
+            email_html = build_email_html_with_data(submission_type, data, submission.id)
+            
+            email_sent = send_email(
+                subject=f"New {submission_type.title()} Insurance Request - {submission.id[:8]}",
+                html_content=email_html,
+                recipients=PRIMARY_RECIPIENTS,
+                cc=[CC_RECIPIENT]
+            )
+            
+            if email_sent:
+                submission.email_sent = True
                 db.session.commit()
+            
+            logger.info(f"Submission {submission.id} processed successfully")
+            
+            return jsonify({
+                "message": "Submission processed successfully!",
+                "submission_id": submission.id,
+                "pdf_download_url": f"/download-pdf/{submission.id}",
+                "view_url": f"/submission/{submission.id}"
+            }), 200
+            
         except Exception as e:
             db.session.rollback()
-            logger.error(f"Error updating submission status: {str(e)}")
+            logger.error(f"Error processing submission: {str(e)}")
+            return jsonify({"error": "Internal server error occurred"}), 500
 
-# === API Routes ===
-@app.route("/submit", methods=["POST"])
-def submit():
-    """Handle insurance submission with email, PDF, and database storage."""
-    try:
-        content = request.json
-        submission_type = content.get("type")
-        data = content.get("data")
+    @app.route("/download-pdf/<submission_id>")
+    def download_pdf(submission_id):
+        """Download PDF for a submission."""
+        submission = InsuranceSubmission.query.get_or_404(submission_id)
         
-        # Validate input
-        is_valid, error_message = validate_submission_data(submission_type, data)
-        if not is_valid:
-            return jsonify({"error": error_message}), 400
+        if not submission.pdf_generated:
+            pdf_generator = PDFGenerator()
+            pdf_buffer = pdf_generator.generate_pdf(
+                submission.submission_type,
+                submission.submission_data,
+                submission_id
+            )
+            
+            # Store the PDF in the database or filesystem in a real app
+            # For this example, we'll just mark it as generated
+            submission.pdf_generated = True
+            db.session.commit()
+            
+            return send_file(
+                pdf_buffer,
+                as_attachment=True,
+                download_name=f"insurance_submission_{submission_id}.pdf",
+                mimetype='application/pdf'
+            )
         
-        # Save to database
-        submission_id = DatabaseService.save_submission(submission_type, data)
-        
-        # Generate and send email with data
-        email_html = build_email_html_with_data(submission_type, data, submission_id)
-        
-        msg = Message(
-            subject=f"New {submission_type.title()} Insurance Request - {submission_id[:8]}",
-            recipients=[
-                "j.chukwuony@alustudent.com"
-                # "kingdavidscloud@gmail.com"
-            ],
-            cc=["cc_insurer@example.com"],
-            html=email_html
-        )
-        
-        # Send email
-        mail.send(msg)
-        DatabaseService.update_submission_status(submission_id, email_sent=True)
-        
-        logger.info(f"Submission {submission_id} processed successfully")
-        
-        return jsonify({
-            "message": "Submission processed successfully!",
-            "submission_id": submission_id,
-            "pdf_download_url": f"/download-pdf/{submission_id}",
-            "view_url": f"/submission/{submission_id}"
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Error processing submission: {str(e)}")
-        return jsonify({"error": "Internal server error occurred"}), 500
+        # In a real app, you would retrieve the stored PDF here
+        return "PDF not yet generated", 404
 
-@app.route("/submission/<submission_id>")
-def view_submission(submission_id: str):
-    """View submission details online."""
-    submission = DatabaseService.get_submission(submission_id)
-    if not submission:
-        return "<h2 style='color:red;text-align:center;'>Submission not found.</h2>", 404
-    
-    # Generate HTML view
-    fields = get_fields_for_type(submission.submission_type)
-    rows = ""
-    
-    for field in fields:
-        field_key = normalize_field_key(field)
-        value = submission.submission_data.get(field_key, 'N/A')
-        rows += f"""
-            <tr>
-                <td style='padding:12px;font-weight:bold;color:#333;border-bottom:1px solid #eee;background:#f8f9fa;'>{field}</td>
-                <td style='padding:12px;color:#555;border-bottom:1px solid #eee;'>{value}</td>
-            </tr>
-        """
-    
-    html_template = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Submission Details - LifeLine Africa</title>
-    </head>
-    <body style="font-family:Arial,sans-serif;background:#f5f5f5;margin:0;padding:20px;">
-        <div style="max-width:800px;margin:auto;background:white;border-radius:8px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
-            <div style="background:linear-gradient(135deg,#fea601,#ff8c00);padding:30px;text-align:center;">
-                <img src="https://i.imgur.com/i6Lfiku.png" width="80" alt="LifeLine Logo" style="margin-bottom:15px;" />
-                <h1 style="color:white;margin:0;font-size:24px;">{submission.submission_type.title()} Insurance Submission</h1>
-                <p style="color:rgba(255,255,255,0.9);margin:10px 0 0 0;">Submission ID: {submission_id}</p>
-            </div>
-            <div style="padding:30px;">
-                <table style="width:100%;border-collapse:collapse;border:1px solid #eee;border-radius:6px;overflow:hidden;">
-                    {rows}
+    @app.route("/submission/<submission_id>")
+    def view_submission(submission_id):
+        """View submission details in HTML."""
+        submission = InsuranceSubmission.query.get_or_404(submission_id)
+        fields = get_fields_for_type(submission.submission_type)
+        
+        return render_template_string('''
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Submission {{ submission.id }}</title>
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 20px; }
+                    h1 { color: #333; }
+                    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+                    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                    th { background-color: #f2f2f2; }
+                </style>
+            </head>
+            <body>
+                <h1>{{ submission.submission_type|title }} Insurance Submission</h1>
+                <p>Submission ID: {{ submission.id }}</p>
+                <p>Submitted: {{ submission.created_at }}</p>
+                
+                <table>
+                    <tr>
+                        <th>Field</th>
+                        <th>Value</th>
+                    </tr>
+                    {% for field in fields %}
+                    <tr>
+                        <td>{{ field }}</td>
+                        <td>{{ submission.submission_data.get(field.lower().replace(' ', '_'), 'N/A') }}</td>
+                    </tr>
+                    {% endfor %}
                 </table>
-                <div style="text-align:center;margin-top:30px;">
-                    <a href="/download-pdf/{submission_id}" 
-                       style="display:inline-block;padding:12px 25px;background:#fea601;color:white;text-decoration:none;border-radius:6px;font-weight:bold;">
-                        📄 Download PDF
-                    </a>
-                </div>
-                <div style="background:#f8f9fa;padding:20px;border-radius:6px;margin-top:25px;">
-                    <p style="margin:0;color:#666;font-size:14px;">
-                        <strong>Submitted:</strong> {submission.created_at.strftime('%Y-%m-%d %H:%M:%S')} UTC<br>
-                        <strong>Email Sent:</strong> {'Yes' if submission.email_sent else 'No'}<br>
-                        <strong>PDF Generated:</strong> {'Yes' if submission.pdf_generated else 'No'}
-                    </p>
-                </div>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-    
-    return render_template_string(html_template)
+                
+                <p><a href="/download-pdf/{{ submission.id }}">Download PDF</a></p>
+            </body>
+            </html>
+        ''', submission=submission, fields=fields)
 
-@app.route("/download-pdf/<submission_id>")
-def download_pdf(submission_id: str):
-    """Generate and download PDF for submission."""
-    submission = DatabaseService.get_submission(submission_id)
-    if not submission:
-        return jsonify({"error": "Submission not found"}), 404
-    
-    try:
-        # Generate PDF
-        pdf_generator = PDFGenerator()
-        pdf_buffer = pdf_generator.generate_pdf(
-            submission.submission_type,
-            submission.submission_data,
-            submission_id
-        )
-        
-        # Update database status
-        DatabaseService.update_submission_status(submission_id, pdf_generated=True)
-        
-        # Return PDF file
-        return send_file(
-            pdf_buffer,
-            as_attachment=True,
-            download_name=f"insurance_submission_{submission_id[:8]}.pdf",
-            mimetype='application/pdf'
-        )
-        
-    except Exception as e:
-        logger.error(f"Error generating PDF for {submission_id}: {str(e)}")
-        return jsonify({"error": "Error generating PDF"}), 500
+    @app.route("/")
+    def index():
+        """Show a simple welcome page."""
+        return """
+            <h1>LifeLine Africa Insurance Services</h1>
+            <p>Welcome to the insurance submission API.</p>
+        """
 
-@app.route("/submissions", methods=["GET"])
-def list_submissions():
-    """List all submissions (for admin purposes)."""
-    try:
-        page = request.args.get('page', 1, type=int)
-        per_page = request.args.get('per_page', 10, type=int)
-        
-        submissions = InsuranceSubmission.query.paginate(
-            page=page, per_page=per_page, error_out=False
-        )
-        
-        return jsonify({
-            "submissions": [sub.to_dict() for sub in submissions.items],
-            "total": submissions.total,
-            "pages": submissions.pages,
-            "current_page": page
-        })
-        
-    except Exception as e:
-        logger.error(f"Error listing submissions: {str(e)}")
-        return jsonify({"error": "Error retrieving submissions"}), 500
+@click.command("init-db")
+@with_appcontext
+def init_db_command():
+    """Initialize the database."""
+    db.create_all()
+    click.echo("Initialized the database.")
 
-@app.route("/health")
-def health_check():
-    """Health check endpoint."""
-    return jsonify({
-        "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
-        "database": "connected" if db.engine.pool.checked_in() > 0 else "disconnected"
-    })
-
-# === Error Handlers ===
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({"error": "Not found"}), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    db.session.rollback()
-    return jsonify({"error": "Internal server error"}), 500
-
-# === Database Initialization ===
-def init_db():
-    """Initialize database tables."""
-    try:
-        db.create_all()
-        logger.info("Database tables created successfully")
-    except Exception as e:
-        logger.error(f"Error creating database tables: {str(e)}")
-
-# === Application Startup ===
 if __name__ == "__main__":
-    with app.app_context():
-        init_db()
+    app = create_app()
     
-    # Run the application
+    # Create tables if they don't exist
+    with app.app_context():
+        db.create_all()
+    
     app.run(
         debug=os.getenv('FLASK_ENV') == 'development',
         host='0.0.0.0',
