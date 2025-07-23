@@ -11,7 +11,7 @@ app.config['MAIL_PORT'] = 587
 app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_USERNAME'] = 'Justiceofficial0010@gmail.com'
 app.config['MAIL_PASSWORD'] = 'zogo itjd vjdr yshl'
-app.config['MAIL_DEFAULT_SENDER'] = ('My Lifeline', 'Justiceofficial0010@gmail.com')
+app.config['MAIL_DEFAULT_SENDER'] = ('My Lifeline Africa', 'Justiceofficial0010@gmail.com')
 
 mail = Mail(app)
 
@@ -112,8 +112,8 @@ def submit():
     msg = Message(
         subject=f"New {data_type.title()} Insurance Request",
         recipients=[
-            "j.chukwuony@alustudent.com"
-            # "kingdavidscloud@gmail.com "
+            "j.chukwuony@alustudent.com",
+            "kingdavidscloud@gmail.com "
         ],
         cc=["cc_insurer@example.com"],
         html=email_html
