@@ -14,10 +14,6 @@ app.config['MAIL_DEFAULT_SENDER'] = ('My Lifeline', 'Justiceofficial0010@gmail.c
 
 mail = Mail(app)
 
-# === Load logo image in base64 ===
-with open("logo_base64.txt", "r") as f:
-    logo_base64 = f.read().replace('\n', '').strip()
-
 # === Fields for Each Type ===
 individual_fields = [
     "Full Name", "Age", "Phone Number", "Email", "Location", "Occupation",
@@ -41,7 +37,7 @@ company_fields = [
     "Preferred Mode of Healthcare"
 ]
 
-# === Modern Email HTML Builder ===
+# === Email HTML Builder ===
 def build_email_html(data_type, data):
     fields = individual_fields if data_type == "individual" else company_fields
 
@@ -68,7 +64,7 @@ def build_email_html(data_type, data):
     <div style="background:#f4f4f7;padding:40px 20px;">
         <div style="max-width:650px;margin:0 auto;background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,0.05);font-family:sans-serif;">
             <div style="text-align:center;padding:30px 20px 10px;">
-                <img src="data:image/png;base64,{logo_base64}" width="70" alt="LifeLine Logo" style="margin-bottom:15px;" />
+                <img src="https://i.imgur.com/i6Lfiku.png" width="70" alt="LifeLine Logo" style="margin-bottom:15px;" />
                 <h2 style="font-size:22px;margin:0;color:#222;">New Insurance Request</h2>
             </div>
             <div style="padding:20px 30px;">
