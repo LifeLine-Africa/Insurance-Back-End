@@ -1,10 +1,11 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from flask_mail import Mail, Message
 import os
+import uuid
 
 app = Flask(__name__)
 
-# === Email Configuration for Custom SMTP ===
+# === Email Configuration ===
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'
 app.config['MAIL_PORT'] = 587
 app.config['MAIL_USE_TLS'] = True
@@ -14,7 +15,10 @@ app.config['MAIL_DEFAULT_SENDER'] = ('My Lifeline', 'Justiceofficial0010@gmail.c
 
 mail = Mail(app)
 
-# === Fields for Each Type ===
+# === In-Memory Submission Store ===
+SUBMISSIONS = {}
+
+# === Field Definitions ===
 individual_fields = [
     "Full Name", "Age", "Phone Number", "Email", "Location", "Occupation",
     "Monthly Income Range", "Number Of Dependents", "Existing Medical Conditions",
@@ -37,11 +41,26 @@ company_fields = [
     "Preferred Mode of Healthcare"
 ]
 
-# === Email HTML Builder ===
-def build_email_html(data_type, data):
-    fields = individual_fields if data_type == "individual" else company_fields
+# === Build Email With View Link ===
+def build_email_html_link(submission_id):
+    view_link = f"http://localhost:5000/submission/{submission_id}"
+    return f"""
+    <div style="font-family:Arial, sans-serif;max-width:600px;margin:auto;text-align:center;padding:30px;background:#f9f9f9;">
+        <img src="https://i.imgur.com/i6Lfiku.png" width="100" style="margin-bottom:20px;" alt="LifeLine Logo" />
+        <h2 style="color:#333;">New Insurance Request</h2>
+        <p style="color:#555;">A new insurance request has been submitted via LifeLine Africa.</p>
+        <a href="{view_link}" style="display:inline-block;margin-top:20px;padding:12px 25px;background:#007BFF;color:white;text-decoration:none;border-radius:6px;">
+            View Submission
+        </a>
+        <p style="margin-top:40px;color:#888;">LifeLine Africa Team</p>
+    </div>
+    """
 
+# === Build Submission View Page ===
+def build_submission_html(data_type, data):
+    fields = individual_fields if data_type == "individual" else company_fields
     rows = ""
+
     for field in fields:
         field_key = (
             field.replace("(", "")
@@ -53,36 +72,25 @@ def build_email_html(data_type, data):
                  .lower()
         )
         value = data.get(field_key, 'N/A')
-        rows += (
-            f"<tr>"
-            f"<td style='padding:10px 15px;font-weight:600;color:#333;border-bottom:1px solid #eee;width:45%;'>{field}</td>"
-            f"<td style='padding:10px 15px;color:#555;border-bottom:1px solid #eee;'>{value}</td>"
-            f"</tr>"
-        )
+        rows += f"""
+            <tr>
+                <td style='padding:10px;font-weight:bold;color:#333;border-bottom:1px solid #eee;'>{field}</td>
+                <td style='padding:10px;color:#555;border-bottom:1px solid #eee;'>{value}</td>
+            </tr>
+        """
 
     return f"""
-    <div style="background:#f4f4f7;padding:40px 20px;">
-        <div style="max-width:650px;margin:0 auto;background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,0.05);font-family:sans-serif;">
-            <div style="text-align:center;padding:30px 20px 10px;">
-                <img src="https://i.imgur.com/i6Lfiku.png" width="70" alt="LifeLine Logo" style="margin-bottom:15px;" />
-                <h2 style="font-size:22px;margin:0;color:#222;">New Insurance Request</h2>
-            </div>
-            <div style="padding:20px 30px;">
-                <p style="font-size:15px;color:#444;">Dear Insurance Partner,</p>
-                <p style="font-size:15px;color:#444;">
-                    We have received a new <strong>{data_type.title()}</strong> insurance interest form via the LifeLine Africa platform.
-                    Kindly find the client’s submitted details below:
-                </p>
-                <table style="width:100%;margin-top:20px;border-collapse:collapse;border-radius:6px;overflow:hidden;background:#fff;">
-                    {rows}
-                </table>
-                <p style="font-size:14px;color:#555;margin-top:30px;">Warm regards,<br><strong>LifeLine Africa Team</strong></p>
-            </div>
-        </div>
+    <div style="font-family:Arial,sans-serif;max-width:700px;margin:auto;padding:30px;">
+        <img src="https://i.imgur.com/i6Lfiku.png" width="100" alt="LifeLine Logo" style="display:block;margin:auto;margin-bottom:20px;" />
+        <h2 style="text-align:center;color:#222;">{data_type.title()} Insurance Submission</h2>
+        <table style="width:100%;border-collapse:collapse;margin-top:30px;">
+            {rows}
+        </table>
+        <p style="margin-top:30px;color:#777;text-align:center;">Submitted via LifeLine Africa</p>
     </div>
     """
 
-# === API Route ===
+# === Email Submission API ===
 @app.route("/submit", methods=["POST"])
 def submit():
     content = request.json
@@ -94,13 +102,17 @@ def submit():
     if not data:
         return jsonify({"error": "Missing 'data' field"}), 400
 
-    email_html = build_email_html(data_type, data)
+    # Store submission with UUID
+    submission_id = str(uuid.uuid4())
+    SUBMISSIONS[submission_id] = {"type": data_type, "data": data}
+
+    # Build email with link
+    email_html = build_email_html_link(submission_id)
 
     msg = Message(
-        subject=f"New {data_type.title()} Insurance Request from LifeLine Africa",
+        subject=f"New {data_type.title()} Insurance Request",
         recipients=[
-            "j.chukwuony@alustudent.com", "insurer2@example.com", "insurer3@example.com",
-            "insurer4@example.com", "insurer5@example.com"
+            "j.chukwuony@alustudent.com"
         ],
         cc=["cc_insurer@example.com"],
         html=email_html
@@ -108,9 +120,20 @@ def submit():
 
     try:
         mail.send(msg)
-        return jsonify({"message": "Email sent successfully!"}), 200
+        return jsonify({"message": "Email sent!", "submission_id": submission_id}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# === Route to View Submission ===
+@app.route("/submission/<submission_id>")
+def view_submission(submission_id):
+    submission = SUBMISSIONS.get(submission_id)
+    if not submission:
+        return "<h2 style='color:red;text-align:center;'>Submission not found.</h2>", 404
+
+    html = build_submission_html(submission["type"], submission["data"])
+    return render_template_string(html)
+
+# === Run App ===
 if __name__ == "__main__":
     app.run(debug=True)
