@@ -45,11 +45,22 @@ company_fields = [
 def build_email_html(data_type, data):
     fields = individual_fields if data_type == "individual" else company_fields
 
-    rows = "".join(
-        f"<tr><td style='padding:8px;border:1px solid #ccc;'><strong>{field}</strong></td>"
-        f"<td style='padding:8px;border:1px solid #ccc;'>{data.get(field.replace(' ', '_').lower(), 'N/A')}</td></tr>"
-        for field in fields
-    )
+    rows = ""
+    for field in fields:
+        field_key = (
+            field.replace("(", "")
+                 .replace(")", "")
+                 .replace("/", "")
+                 .replace(",", "")
+                 .replace("  ", " ")
+                 .replace(" ", "_")
+                 .lower()
+        )
+        value = data.get(field_key, 'N/A')
+        rows += (
+            f"<tr><td style='padding:8px;border:1px solid #ccc;'><strong>{field}</strong></td>"
+            f"<td style='padding:8px;border:1px solid #ccc;'>{value}</td></tr>"
+        )
 
     return f"""
     <div style="font-family:sans-serif;max-width:600px;margin:auto;border:1px solid #eaeaea;border-radius:10px;">
