@@ -301,7 +301,7 @@ def build_email_html_with_data(submission_type: str, data: Dict[str, Any], submi
                 <div style="text-align:center;margin:40px 0;">
                     <a href="{pdf_link}" 
                        style="display:inline-block;margin:0 10px 10px 10px;padding:15px 30px;background:{BRAND_COLOR};color:white;text-decoration:none;border-radius:6px;font-weight:bold;box-shadow:0 2px 4px rgba(0,0,0,0.2);transition:all 0.2s;">
-                        📄 Download PDF
+                        Download PDF
                     </a>
                 </div>
                 
@@ -342,7 +342,7 @@ class PDFGenerator:
     def download_logo(self) -> Optional[str]:
         """Download and save logo for PDF use."""
         try:
-            logo_path = "temp_logo.png"
+            logo_path = "Logo.png"
             urllib.request.urlretrieve(LOGO_URL, logo_path)
             return logo_path
         except Exception as e:
@@ -1002,7 +1002,7 @@ def register_routes(app):
                         
                         <div class="content">
                             <div class="info-card">
-                                <h3>📋 Submission Information</h3>
+                                <h3>Submission Information</h3>
                                 <div class="info-grid">
                                     <div class="info-item">
                                         <div class="info-label">Submission Type</div>
@@ -1039,7 +1039,7 @@ def register_routes(app):
                             
                             <div class="actions">
                                 <a href="/download-pdf/{submission.id}" class="btn btn-primary">
-                                    📄 Download PDF
+                                    Download PDF
                                 </a>
                                 <a href="/" class="btn btn-secondary">
                                     🏠 Home
@@ -1276,17 +1276,17 @@ def register_routes(app):
                     
                     <div class="stats">
                         <div class="stat">
-                            <div class="stat-icon">📋</div>
+                            <div class="stat-icon"></div>
                             <div class="stat-title">Smart Processing</div>
                             <div class="stat-desc">Automated validation and processing of insurance applications</div>
                         </div>
                         <div class="stat">
-                            <div class="stat-icon">📧</div>
+                            <div class="stat-icon"></div>
                             <div class="stat-title">Email Notifications</div>
                             <div class="stat-desc">Instant notifications to 5 recipients plus CC to stakeholders</div>
                         </div>
                         <div class="stat">
-                            <div class="stat-icon">📄</div>
+                            <div class="stat-icon"></div>
                             <div class="stat-title">PDF Generation</div>
                             <div class="stat-desc">Professional PDF documents with branded styling</div>
                         </div>

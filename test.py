@@ -18,8 +18,8 @@ class TestConfig(Config):
     TESTING = True
     MONGO_URI = 'mongodb://localhost:27017/insurance_test_db'
     SECRET_KEY = 'test-secret-key'
-    SMTP_USERNAME = 'j.chukwuony@alustudent.com'
-    SMTP_PASSWORD = 'ljol rjet wgyg fgbe'
+    SMTP_USERNAME = 'SMTP_USERNAME'
+    SMTP_PASSWORD = 'SMTP_PASSWORD'
 
 
 @pytest.fixture
