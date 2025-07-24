@@ -1,0 +1,23 @@
+name: Flask CI
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+
+    runs-on: self-hosted
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Populate the .env
+      run: echo "${{ secrets.ENV_FILE }}" > .env
+
+    - name: Create a virtual environment and install dependencies
+      run: |
+        python3.10 -m venv venv
+        source venv/bin/activate
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
