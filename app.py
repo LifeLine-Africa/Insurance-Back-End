@@ -32,8 +32,8 @@ db = SQLAlchemy()
 # Email configuration
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 465
-SMTP_USERNAME = 'J.chukwuony@alustudent.com'
-SMTP_PASSWORD = 'ljol rjet wgyg fgbe'
+SMTP_USERNAME = 'SMTP_USERNAME'
+SMTP_PASSWORD = 'SMTP_PASSWORD'
 
 # Email recipients configuration (5 primary recipients + CC)
 PRIMARY_RECIPIENTS = [
