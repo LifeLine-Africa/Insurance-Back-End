@@ -1,89 +1,121 @@
-# LifeLine Africa Insurance API - Production Deployment Guide
+![LifeLine Africa Logo](https://i.imgur.com/i6Lfiku.png)
+# LifeLine Africa Insurance API
 
-## Overview
+A robust insurance application API built with Flask that handles submissions, generates PDF documents, and sends email notifications.
 
-This guide covers the complete production deployment of the LifeLine Africa Insurance API, a high-performance Flask application with enterprise-grade features.
+## Table of Contents
+1. [Features](#features)
+2. [Prerequisites](#prerequisites)
+3. [Quick Start](#quick-start)
+4. [Development Setup](#development-setup)
+5. [Production Deployment](#production-deployment)
+   - [Docker Deployment](#docker-deployment-recommended)
+   - [Manual Deployment](#manual-deployment)
+6. [Configuration](#configuration)
+7. [API Endpoints](#api-endpoints)
+8. [Database Management](#database-management)
+9. [Maintenance](#maintenance)
+10. [Troubleshooting](#troubleshooting)
+11. [Security](#security)
+12. [License](#license)
+
+## Features
+- **Multi-type Submissions**: Handle both individual and company insurance applications
+- **Automated PDF Generation**: Professionally formatted PDF documents with branding
+- **Email Notifications**: Send to multiple recipients with CC capabilities
+- **Database Integration**: Supports SQLite (development) and MongoDB (production)
+- **Health Monitoring**: Built-in health check endpoint
+- **Comprehensive Logging**: Detailed request and error logging
 
 ## Prerequisites
 
-### System Requirements
-- **Operating System**: Ubuntu 20.04+ or CentOS 8+
-- **Python**: 3.11+
-- **Memory**: Minimum 2GB RAM (4GB+ recommended)
-- **Storage**: 20GB+ available space
-- **Network**: Outbound HTTPS/SMTP access for email delivery
+### For Development
+- Python 3.11+
+- SQLite
+- SMTP credentials for email testing
 
-### Required Services
-- **MongoDB**: 4.4+ (local or MongoDB Atlas)
-- **Redis**: 6.0+ (for rate limiting and caching)
-- **SMTP Server**: Gmail or corporate email server
-- **SSL Certificate**: Let's Encrypt or commercial certificate
+### For Production
+| Component | Requirement |
+|-----------|-------------|
+| OS | Ubuntu 20.04+/CentOS 8+ |
+| Memory | 2GB RAM (4GB recommended) |
+| Storage | 20GB+ available |
+| Python | 3.11+ |
+| Services | MongoDB 4.4+, Redis 6.0+ |
+| Network | Outbound HTTPS/SMTP access |
 
-##  Installation Methods
+## Quick Start
 
-### Method 1: Docker Deployment (Recommended)
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/your-repo/insurance-back-end
+   cd insurance-back-end
+   ```
 
-#### 1. Clone and Setup
+2. Set up environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # Linux/Mac
+   venv\Scripts\activate    # Windows
+   pip install -r requirements.txt
+   ```
+
+3. Run the application:
+   ```bash
+   python app.py
+   ```
+
+# Development Setup
+## Initial Configuration
+1. Copy the example environment file:
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Edit .env with your settings:
+   ```bash
+   DEBUG=True
+   SECRET_KEY=your-dev-secret-key
+   SQLALCHEMY_DATABASE_URI=sqlite:///instance/insurance.db
+   ```
+
+3. Initialize the database:
+   ```bash
+   flask init-db
+   ```
+
+## Running Tests
 ```bash
-git clone <repository-url>
-cd Insurance-Back-End
-cp .env.example .env
+python -m pytest tests/
 ```
 
-#### 2. Configure Environment Variables
-Edit `.env file with your production values:
+## Configuration
+### Environment Variables
+   | Variable            | Required | Description                   | Example                          |
+|---------------------|----------|-------------------------------|----------------------------------|
+| `DEBUG`             | Yes      | Debug mode                    | `False` in production            |
+| `SECRET_KEY`        | Yes      | Flask secret key              | Random string                    |
+| `DATABASE_URI`      | Yes      | Database connection string    | `mongodb://user:pass@host:port/db` |
+| `SMTP_SERVER`       | Yes      | SMTP host                     | `smtp.gmail.com`                 |
+| `SMTP_PORT`         | Yes      | SMTP port                     | `465`                            |
+| `PRIMARY_RECIPIENTS`| Yes      | Main recipients               | `["admin@domain.com"]`           |
+
+## Email Configuration
 ```bash
-# Production Configuration
-DEBUG=false
-SECRET_KEY=your-production-secret-key-here
-FORCE_HTTPS=true
-
-# Database
-MONGO_URI=mongodb://mongo:27017/yourmongodb
-# Or for MongoDB Atlas:
-# MONGO_URI=mongodb+srv://username:password@cluster.mongodb.net/yourmongodb
-
-# Email Configuration
-SMTP_SERVER=smtp.gmail.com
-SMTP_PORT=465
-SMTP_USERNAME=your-email@gmail.com
-SMTP_PASSWORD=your-app-password
-EMAIL_FROM_NAME=LifeLine Africa Insurance
-EMAIL_FROM_ADDRESS=noreply@yourdomain.com
-
-# Recipients
-PRIMARY_RECIPIENTS=["admin@yourdomain.com","insurance@yourdomain.com"]
-CC_RECIPIENTS=["notifications@yourdomain.com"]
-
-# Additional Security
-ALLOWED_ORIGINS=https://yourdomain.com,https://api.yourdomain.com
+SMTP_USERNAME=your@email.com
+SMTP_PASSWORD=your-password
+EMAIL_FROM_NAME=LifeLine Africa
+EMAIL_FROM_ADDRESS=noreply@domain.com
 ```
 
-#### 3. Set Additional Environment Variables
-Create `.env.docker` for Docker-specific settings:
-```bash
-# Database Passwords
-MONGO_ROOT_PASSWORD=secure-mongo-password
-REDIS_PASSWORD=secure-redis-password
+## API Endpoints
 
-# Application
-PORT=5000
-GUNICORN_WORKERS=4
-```
+| Endpoint                 | Method | Description                     |
+|--------------------------|--------|---------------------------------|
+| `/submit`               | POST   | Submit new insurance application |
+| `/download-pdf/<id>`    | GET    | Download generated PDF           |
+| `/submission/<id>`      | GET    | View submission details          |
+| `/health`               | GET    | System health check              |
 
-#### 4. Deploy with Docker Compose
-```bash
-# Start core services
-docker-compose up -d insurance-api mongo redis
-
-# Start with monitoring (optional)
-docker-compose --profile monitoring up -d
-
-# Start with logging (optional)
-docker-compose --profile logging up -d
-
-# Start everything
-docker-compose --profile monitoring --profile logging up -d
-```
-
-####
+# License
+This project is licensed under The Lifeline Africa License
