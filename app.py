@@ -43,12 +43,13 @@ SMTP_PASSWORD = os.getenv('SMTP_PASSWORD')
 
 # Email recipients configuration
 PRIMARY_RECIPIENTS = [
-    "admin@lifelineafrica.com",
-    "operations@lifelineafrica.com", 
-    "underwriting@lifelineafrica.com",
-    "customer.service@lifelineafrica.com"
+    "customercare@mua.rw", 
+    "info@radiant.rw", 
+    "info@rw.sanlamallianz.com", 
+    "Rwanda@britam.Com", 
+    "info@edencaremedical.com"
 ]
-CC_RECIPIENT = "justiceofficial0010@gmail.com"
+CC_RECIPIENT = "info@mylifeline.world"
 
 # Brand configuration
 LOGO_URL = "https://i.imgur.com/i6Lfiku.png"
