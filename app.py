@@ -159,8 +159,9 @@ def create_app():
 
     # Add your specific domains
     allowed_origins.extend([
-        'https://yourfrontenddomain.com',
-        'https://www.yourfrontenddomain.com'
+        'https://insurance.mylifeline.world/',
+        'https://www.insurance.mylifeline.world/',
+        'http://localhost:3000'
     ])
 
     # Remove empty strings and duplicates
