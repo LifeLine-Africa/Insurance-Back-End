@@ -59,7 +59,7 @@ BRAND_COLOR_SECONDARY = "#ff8c00"
 INDIVIDUAL_FIELDS = [
     "Full Name", "Age", "Phone Number", "Email", "Location", "Occupation",
     "Monthly Income Range", "Number Of Dependents", "Existing Medical Conditions",
-    "Regular Medications", "Frequency of Hospital Visits", "Preferred Hospitals/Clinics",
+    "Regular Medications", "Frequency of Hospital Visits", "Preferred Hospitals",
     "Family Medical History", "Preferred Monthly Premium Range", "Priority",
     "Specific Coverage Needs", "Preferred Payment Frequency", "International Coverage Needs",
     "Current Insurance", "Past Insurance Claims", "Maternity Coverage Needs",
@@ -139,6 +139,9 @@ def create_app():
         MAX_CONTENT_LENGTH=16 * 1024 * 1024  # 16MB max file size
     )
 
+    print("🔧 FLASK_ENV:", os.getenv('FLASK_ENV'))
+
+
     # === CORS Configuration ===
     allowed_origins = set()
 
@@ -162,6 +165,8 @@ def create_app():
     allowed_origins.update([
         'https://insurance.mylifeline.world',
         'https://www.insurance.mylifeline.world',
+        'http://127.0.0.1:3000',
+        'http://localhost:3000'
     ])
 
     # Remove empty strings
