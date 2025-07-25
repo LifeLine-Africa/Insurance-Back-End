@@ -1,5 +1,12 @@
 # LifeLine Africa Insurance API - Production Docker Image
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
+
+# Upgrade pip and system packages to address vulnerabilities
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get dist-upgrade -y && \
+    apt-get autoremove -y && \
+    pip install --upgrade pip
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
