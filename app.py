@@ -139,44 +139,45 @@ def create_app():
         MAX_CONTENT_LENGTH=16 * 1024 * 1024  # 16MB max file size
     )
 
-    # Configure CORS with specific origins for security
-    allowed_origins = []
+    # === CORS Configuration ===
+    allowed_origins = set()
 
-    # Add development origins
+    # Development origins
     if os.getenv('FLASK_ENV') == 'development':
-        allowed_origins.extend([
+        allowed_origins.update([
             'http://localhost:3000',
             'http://localhost:3001',
             'http://127.0.0.1:3000',
             'http://127.0.0.1:3001',
-            'https://insurance.mylifeline.world/'
         ])
 
-    # Add production origins from environment variable
+    # Production origins from ENV (e.g., CORS_ORIGINS="https://frontend.com,https://www.frontend.com")
     production_origins = os.getenv('CORS_ORIGINS', '').split(',')
-    if production_origins and production_origins != ['']:
-        allowed_origins.extend([origin.strip() for origin in production_origins])
+    for origin in production_origins:
+        origin = origin.strip()
+        if origin:
+            allowed_origins.add(origin)
 
-    # Add your specific domains
-    allowed_origins.extend([
-        'https://insurance.mylifeline.world/',
-        'https://www.insurance.mylifeline.world/',
-        'http://localhost:3000'
+    # Manually add specific domains
+    allowed_origins.update([
+        'https://insurance.mylifeline.world',
+        'https://www.insurance.mylifeline.world',
     ])
 
-    # Remove empty strings and duplicates
-    allowed_origins = list(set([origin for origin in allowed_origins if origin]))
+    # Remove empty strings
+    allowed_origins = list(filter(None, allowed_origins))
 
     # Initialize CORS
-    CORS(app, 
-         origins=allowed_origins,
-         methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-         allow_headers=['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
-         supports_credentials=True,
-         max_age=86400  # Cache preflight requests for 24 hours
+    CORS(
+        app,
+        origins=allowed_origins,
+        supports_credentials=True,
+        methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
+        max_age=86400
     )
 
-    logger.info(f"✅ CORS configured for origins: {allowed_origins}")
+    print(f"✅ CORS allowed origins: {allowed_origins}")
 
     # ====================
     # Ensure Instance Folder Exists
