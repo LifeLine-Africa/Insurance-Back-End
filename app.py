@@ -2,7 +2,7 @@ from flask import Flask, app, request, jsonify, render_template_string, send_fil
 import os
 import uuid
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 import logging
 from typing import Dict, Any, Optional, List
 import io
@@ -25,6 +25,11 @@ from PIL import Image as PILImage
 import psycopg2
 from psycopg2.extras import DictCursor
 from psycopg2 import sql
+import html
+import re
+import unicodedata
+import base64
+from io import BytesIO
 
 load_dotenv()
 
@@ -78,6 +83,77 @@ COMPANY_FIELDS = [
 
 logger = logging.getLogger(__name__)
 
+# ======================
+# Text Processing Utilities
+# ======================
+
+def clean_form_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Clean and normalize form data before processing."""
+    cleaned_data = {}
+    
+    for key, value in data.items():
+        if isinstance(value, str):
+            value = unicodedata.normalize('NFKD', value)
+            value = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', value)
+            value = value.strip()
+            if not value:
+                value = 'N/A'
+        elif value is None:
+            value = 'N/A'
+        else:
+            value = str(value)
+        
+        cleaned_data[key] = value
+    
+    return cleaned_data
+
+def sanitize_for_pdf(text: str, max_length: int = 500) -> str:
+    """Sanitize text specifically for PDF generation."""
+    if not text or text == 'None':
+        return 'N/A'
+    
+    text = str(text)
+    text = unicodedata.normalize('NFKD', text)
+    text = text.replace('\x00', '')
+    text = re.sub(r'\r\n|\r|\n', '<br/>', text)
+    text = text.replace('&', '&amp;')
+    text = text.replace('<', '&lt;')
+    text = text.replace('>', '&gt;')
+    text = text.replace('&lt;br/&gt;', '<br/>')
+    
+    if max_length and len(text) > max_length:
+        text = text[:max_length-3] + '...'
+    
+    return text
+
+def format_field_value(field_name: str, value: Any) -> str:
+    """Format field values based on field type for better display."""
+    if value is None or str(value).strip() == '':
+        return 'N/A'
+    
+    value = str(value).strip()
+    field_lower = field_name.lower()
+    
+    if 'email' in field_lower:
+        if '@' in value and '.' in value:
+            return value.lower()
+        return f"{value} (Invalid format)"
+    elif 'phone' in field_lower or 'number' in field_lower:
+        cleaned = re.sub(r'[^\d+\-\(\)\s]', '', value)
+        return cleaned if cleaned else value
+    elif 'date' in field_lower:
+        return value
+    elif 'income' in field_lower or 'budget' in field_lower or 'revenue' in field_lower:
+        if value.replace(',', '').replace('.', '').isdigit():
+            return f"${value}"
+        return value
+    else:
+        return sanitize_for_pdf(value)
+
+# ======================
+# Core Classes
+# ======================
+
 class InsuranceSubmission:
     def __init__(self, submission_type, submission_data):
         self.id = str(uuid.uuid4())
@@ -115,6 +191,295 @@ class InsuranceSubmission:
         submission.pdf_path = data['pdf_path']
         return submission
 
+class PDFGenerator:
+    def __init__(self):
+        self.styles = getSampleStyleSheet()
+        self.setup_custom_styles()
+        self.logo_data = self.get_logo_data()
+    
+    def get_logo_data(self) -> Optional[bytes]:
+        """Download logo and return as bytes with fallback to local logo."""
+        try:
+            # Try to download from URL first
+            response = requests.get(LOGO_URL)
+            if response.status_code == 200:
+                return response.content
+            
+            # If download fails, try local fallback
+            local_logo_path = os.path.join(os.path.dirname(__file__), 'static', 'logo.png')
+            if os.path.exists(local_logo_path):
+                with open(local_logo_path, 'rb') as f:
+                    return f.read()
+            
+            return None
+        except Exception as e:
+            logger.warning(f"Could not load logo: {str(e)}")
+            return None
+    
+    def setup_custom_styles(self):
+        """Setup custom paragraph styles matching the brand."""
+        self.styles.add(ParagraphStyle(
+            name='CustomTitle',
+            parent=self.styles['Heading1'],
+            fontSize=28,
+            spaceAfter=20,
+            alignment=TA_CENTER,
+            textColor=colors.HexColor(BRAND_COLOR),
+            fontName='Helvetica-Bold'
+        ))
+        
+        self.styles.add(ParagraphStyle(
+            name='CustomSubtitle',
+            parent=self.styles['Heading2'],
+            fontSize=18,
+            spaceAfter=15,
+            alignment=TA_CENTER,
+            textColor=colors.HexColor('#666666'),
+            fontName='Helvetica'
+        ))
+        
+        self.styles.add(ParagraphStyle(
+            name='BrandHeader',
+            parent=self.styles['Normal'],
+            fontSize=12,
+            alignment=TA_CENTER,
+            textColor=colors.HexColor('#888888'),
+            fontName='Helvetica'
+        ))
+        
+        self.styles.add(ParagraphStyle(
+            name='FooterStyle',
+            parent=self.styles['Normal'],
+            fontSize=10,
+            alignment=TA_CENTER,
+            textColor=colors.HexColor('#888888'),
+            fontName='Helvetica',
+            spaceBefore=20
+        ))
+    
+    def escape_text(self, text):
+        """Properly escape text for PDF display."""
+        if text is None:
+            return 'N/A'
+        
+        text = str(text)
+        text = html.escape(text, quote=False)
+        
+        replacements = {
+            '&amp;': '&',
+            '&lt;': '<',
+            '&gt;': '>',
+            '&quot;': '"',
+            '&#x27;': "'",
+            '&#x2F;': '/',
+            '\r\n': '<br/>',
+            '\n': '<br/>',
+            '\r': '<br/>',
+            '\t': '    ',
+        }
+        
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+        
+        cleaned_text = ''
+        for char in text:
+            if ord(char) >= 32 or char in ['\n', '\r', '\t', '<', '>', '/']:
+                cleaned_text += char
+            else:
+                cleaned_text += ' '
+        
+        return cleaned_text.strip()
+    
+    def wrap_long_text(self, text, max_chars=50):
+        """Wrap long text for better table display."""
+        if len(text) <= max_chars:
+            return text
+        
+        words = text.split(' ')
+        lines = []
+        current_line = []
+        current_length = 0
+        
+        for word in words:
+            if current_length + len(word) + 1 <= max_chars:
+                current_line.append(word)
+                current_length += len(word) + 1
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+                current_length = len(word)
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        return '<br/>'.join(lines)
+    
+    def generate_pdf(self, submission_type: str, data: Dict[str, Any], submission_id: str) -> io.BytesIO:
+        """Generate professional PDF document with brand styling."""
+        buffer = io.BytesIO()
+        
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            rightMargin=72,
+            leftMargin=72,
+            topMargin=100 if self.logo_data else 72,
+            bottomMargin=100 if self.logo_data else 72,
+            title=f"{submission_type.title()} Insurance Submission - LifeLine"
+        )
+        
+        story = []
+        
+        # Add logo if available
+        if self.logo_data:
+            try:
+                logo = Image(BytesIO(self.logo_data), width=2*inch, height=2*inch)
+                logo.hAlign = 'CENTER'
+                story.append(logo)
+                story.append(Spacer(1, 10))
+            except Exception as e:
+                logger.warning(f"Could not add logo to PDF: {str(e)}")
+        else:
+            text_logo = Paragraph("<b>LifeLine Insurance</b>", self.styles['CustomTitle'])
+            story.append(text_logo)
+            story.append(Spacer(1, 20))
+        
+        company_name = Paragraph("LifeLine Insurance Services", self.styles['BrandHeader'])
+        story.append(company_name)
+        story.append(Spacer(1, 20))
+        
+        title = Paragraph(f"{submission_type.title()} Insurance Submission", self.styles['CustomTitle'])
+        story.append(title)
+        
+        subtitle = Paragraph(f"Submission ID: {submission_id}", self.styles['CustomSubtitle'])
+        story.append(subtitle)
+        
+        submission_info = f"""
+        <para align="center" fontSize="10" textColor="#666666">
+        Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC<br/>
+        Document Type: Official Insurance Application<br/>
+        Status: Pending Review
+        </para>
+        """
+        story.append(Paragraph(submission_info, self.styles['Normal']))
+        story.append(Spacer(1, 30))
+        
+        fields = get_fields_for_type(submission_type)
+        table_data = [['Field', 'Value']]
+        
+        for field in fields:
+            field_key = normalize_field_key(field)
+            raw_value = data.get(field_key, 'N/A')
+            escaped_value = self.escape_text(raw_value)
+            wrapped_value = self.wrap_long_text(escaped_value, 50)
+            value_paragraph = Paragraph(wrapped_value, self.styles['Normal'])
+            table_data.append([field, value_paragraph])
+        
+        table = Table(table_data, colWidths=[2.8*inch, 4.2*inch], repeatRows=1)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(BRAND_COLOR)),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 15),
+            ('TOPPADDING', (0, 0), (-1, 0), 15),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+            ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
+            ('FONTNAME', (1, 1), (1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 1), (-1, -1), 10),
+            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#CCCCCC')),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 12),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 12),
+            ('TOPPADDING', (0, 1), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 1), (-1, -1), 10),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F8F9FA')])
+        ]))
+        
+        story.append(table)
+        story.append(Spacer(1, 40))
+
+        # Add footer with logo if available
+        if self.logo_data:
+            try:
+                logo = Image(BytesIO(self.logo_data), width=40, height=40)
+                logo.hAlign = 'CENTER'
+                
+                footer_content = [
+                    logo,
+                    Spacer(1, 10),
+                    Paragraph("LifeLine Insurance Services", self.styles['BrandHeader']),
+                    Paragraph(f"© {datetime.now(UTC).year} LifeLine Insurance Services. All rights reserved.", 
+                             self.styles['FooterStyle'])
+                ]
+                
+                story.extend(footer_content)
+            except Exception as e:
+                logger.warning(f"Could not add logo to footer: {str(e)}")
+        
+        story.append(Spacer(1, 20))
+        
+        copyright_text = f"""
+        <para align="center" fontSize="8" textColor="#AAAAAA">
+        © {datetime.now().year} LifeLine Insurance Services. All rights reserved.<br/>
+        This document contains confidential information and is intended solely for the addressee.
+        </para>
+        """
+        story.append(Paragraph(copyright_text, self.styles['Normal']))
+        
+        def add_header_footer(canvas, doc):
+            """Add header and footer to each page."""
+            if self.logo_data:
+                try:
+                    # Save the state of the canvas
+                    canvas.saveState()
+                    
+                    # Draw header logo
+                    page_width = A4[0]
+                    logo_width = 1.5*inch
+                    logo_height = 1.5*inch
+                    x = (page_width - logo_width) / 2
+                    y = A4[1] - 1.2*inch
+                    
+                    canvas.drawImage(
+                        BytesIO(self.logo_data), 
+                        x, y, 
+                        width=logo_width, 
+                        height=logo_height,
+                        preserveAspectRatio=True,
+                        mask='auto'
+                    )
+                    
+                    # Draw footer logo
+                    footer_logo_width = 1*inch
+                    footer_logo_height = 1*inch
+                    footer_x = (page_width - footer_logo_width) / 2
+                    footer_y = 0.5*inch
+                    
+                    canvas.drawImage(
+                        BytesIO(self.logo_data), 
+                        footer_x, footer_y,
+                        width=footer_logo_width, 
+                        height=footer_logo_height,
+                        preserveAspectRatio=True,
+                        mask='auto'
+                    )
+                    
+                    # Restore the state of the canvas
+                    canvas.restoreState()
+                except Exception as e:
+                    logger.warning(f"Could not draw logos on page: {str(e)}")
+        
+        doc.build(story, onFirstPage=add_header_footer, onLaterPages=add_header_footer)
+        buffer.seek(0)
+        return buffer
+
+# ======================
+# Database Functions
+# ======================
+
 def get_db_connection():
     """Get a PostgreSQL database connection."""
     conn = psycopg2.connect(
@@ -126,6 +491,350 @@ def get_db_connection():
         cursor_factory=DictCursor
     )
     return conn
+
+def init_database(app):
+    """Initialize PostgreSQL database and create tables if needed."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Create submissions table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS submissions (
+                id VARCHAR(36) PRIMARY KEY,
+                submission_type VARCHAR(20) NOT NULL,
+                submission_data JSONB NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                email_sent BOOLEAN DEFAULT FALSE,
+                customer_email_sent BOOLEAN DEFAULT FALSE,
+                pdf_generated BOOLEAN DEFAULT FALSE,
+                pdf_path TEXT
+            )
+        """)
+        
+        # Create indexes
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_submissions_id ON submissions (id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_submissions_created_at ON submissions (created_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_submissions_type ON submissions (submission_type)")
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        logger.info("✅ Database tables created and indexes established")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Database initialization failed: {str(e)}")
+        return False
+
+# ======================
+# Utility Functions
+# ======================
+
+def normalize_field_key(field: str) -> str:
+    """Normalize field names to match form data keys."""
+    return (field.replace("(", "")
+                .replace(")", "")
+                .replace("/", "")
+                .replace(",", "")
+                .replace("  ", " ")
+                .replace(" ", "_")
+                .lower())
+
+def get_fields_for_type(submission_type: str) -> List[str]:
+    """Get field list based on submission type."""
+    return INDIVIDUAL_FIELDS if submission_type == "individual" else COMPANY_FIELDS
+
+def validate_submission_data_enhanced(submission_type: str, data: Dict[str, Any]) -> tuple[bool, str]:
+    """Enhanced validation with better error handling."""
+    if submission_type not in ["individual", "company"]:
+        return False, "Invalid submission type. Must be 'individual' or 'company'."
+    
+    if not data:
+        return False, "Submission data cannot be empty."
+    
+    # Define required fields based on type
+    if submission_type == "individual":
+        required_fields = {
+            "full_name": "Full Name",
+            "email": "Email Address", 
+            "phone_number": "Phone Number"
+        }
+    else:
+        required_fields = {
+            "company_name": "Company Name",
+            "contact_email": "Contact Email",
+            "contact_phone_number": "Contact Phone Number"
+        }
+    
+    # Check required fields
+    for field_key, field_display in required_fields.items():
+        value = data.get(field_key, '').strip()
+        if not value or value == 'N/A':
+            return False, f"Required field '{field_display}' is missing or empty."
+    
+    # Email validation
+    email_field = "email" if submission_type == "individual" else "contact_email"
+    email = data.get(email_field, '').strip()
+    if email and email != 'N/A':
+        if '@' not in email or '.' not in email:
+            return False, f"Invalid email format: {email}"
+        
+        # Basic email regex
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, email):
+            return False, f"Invalid email format: {email}"
+    
+    # Phone validation
+    phone_field = "phone_number" if submission_type == "individual" else "contact_phone_number"
+    phone = data.get(phone_field, '').strip()
+    if phone and phone != 'N/A':
+        # Remove common formatting characters
+        phone_clean = re.sub(r'[\s\-\(\)\.+]', '', phone)
+        if not phone_clean.isdigit() or len(phone_clean) < 10:
+            return False, f"Invalid phone number format: {phone}"
+    
+    return True, ""
+
+# ======================
+# Email Functions
+# ======================
+
+def send_email_with_attachment(subject: str, html_content: str, recipients: List[str], 
+                              cc: List[str] = None, pdf_attachment: Optional[io.BytesIO] = None) -> bool:
+    """Send email with PDF attachment using SMTP_SSL."""
+    
+    # Ensure CC recipient is always included (only for admin emails)
+    all_recipients = recipients[:]
+    if cc:
+        all_recipients.extend(cc)
+    
+    msg = MIMEMultipart('mixed')
+    msg['From'] = f"LifeLine Insurance <{SMTP_USERNAME}>"
+    msg['To'] = ", ".join(recipients)
+    msg['Subject'] = subject
+    
+    if cc:
+        msg['Cc'] = ", ".join(cc)
+    
+    # Attach HTML content
+    msg.attach(MIMEText(html_content, 'html', 'utf-8'))
+    
+    # Attach PDF if provided
+    if pdf_attachment:
+        pdf_attachment.seek(0)
+        part = MIMEApplication(
+            pdf_attachment.read(),
+            Name=f"insurance_submission_{datetime.now().date()}.pdf"
+        )
+        part['Content-Disposition'] = f'attachment; filename="insurance_submission_{datetime.now().date()}.pdf"'
+        msg.attach(part)
+    
+    try:
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg, to_addrs=all_recipients)
+        
+        logger.info(f"Email sent successfully to {len(recipients)} primary recipients and {len(cc) if cc else 0} CC recipients")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to send email: {str(e)}")
+        return False
+
+def build_admin_email_html(submission_type: str, data: Dict[str, Any], submission_id: str) -> str:
+    """Build professional HTML email with submission data for admin team."""
+    fields = get_fields_for_type(submission_type)
+    
+    data_rows = ""
+    for field in fields:
+        field_key = normalize_field_key(field)
+        value = str(data.get(field_key, 'N/A'))
+        if len(value) > 100:
+            value = value[:97] + "..."
+        
+        data_rows += f"""
+            <tr>
+                <td style="padding:12px;font-weight:bold;color:#333;border-bottom:1px solid #eee;background:#f8f9fa;width:40%;">{field}</td>
+                <td style="padding:12px;color:#555;border-bottom:1px solid #eee;width:60%;">{value}</td>
+            </tr>
+        """
+    
+    pdf_link = f"http://localhost:5000/download-pdf/{submission_id}"
+    
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Insurance Submission - LifeLine</title>
+    </head>
+    <body style="margin:0;padding:0;font-family:Arial,sans-serif;background:#f5f5f5;">
+        <div style="max-width:800px;margin:20px auto;background:white;border-radius:8px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+            <div style="background:white;padding:30px;text-align:center;">
+                <img src="{LOGO_URL}" width="80" alt="LifeLine Logo" style="display:block;margin:0 auto 15px auto;" />
+                <h1 style="color:linear-gradient(135deg,{BRAND_COLOR},{BRAND_COLOR_SECONDARY});margin:0;font-size:28px;line-height:1.3;text-shadow:0 2px 4px rgba(0,0,0,0.3);">New Insurance Request</h1>
+                <p style="color:linear-gradient(135deg,{BRAND_COLOR},{BRAND_COLOR_SECONDARY});margin:8px 0 0 0;font-size:16px;">Submission Type: {submission_type.title()}</p>
+            </div>
+            
+            <div style="padding:40px 30px;">
+                <div style="background:linear-gradient(135deg,#f8f9fa,#e9ecef);padding:20px;border-radius:8px;margin-bottom:30px;border-left:4px solid {BRAND_COLOR};">
+                    <h2 style="color:#333;margin:0 0 10px 0;font-size:18px;">📋 Submission Details</h2>
+                    <p style="color:#666;margin:0;font-size:14px;">
+                        <strong>Submission ID:</strong> {submission_id}<br>
+                        <strong>Submitted:</strong> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC<br>
+                        <strong>Type:</strong> {submission_type.title()} Insurance Application
+                    </p>
+                </div>
+                
+                <p style="color:#555;margin-bottom:25px;font-size:16px;line-height:1.6;">
+                    A new <strong>{submission_type}</strong> insurance request has been submitted via LifeLine Insurance Services. 
+                    Please review the complete details below and take appropriate action.
+                </p>
+                
+                <div style="overflow-x:auto;margin:25px 0;">
+                    <table style="width:100%;border-collapse:collapse;border:1px solid #ddd;border-radius:8px;overflow:hidden;background:white;">
+                        <thead>
+                            <tr style="background:linear-gradient(135deg,{BRAND_COLOR},{BRAND_COLOR_SECONDARY});">
+                                <th style="padding:15px;color:white;text-align:left;font-size:14px;font-weight:bold;">Field</th>
+                                <th style="padding:15px;color:white;text-align:left;font-size:14px;font-weight:bold;">Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {data_rows}
+                        </tbody>
+                    </table>
+                </div>
+                
+                <div style="text-align:center;margin:40px 0;">
+                    <a href="{pdf_link}" 
+                       style="display:inline-block;margin:0 10px 10px 10px;padding:15px 30px;background:{BRAND_COLOR};color:white;text-decoration:none;border-radius:6px;font-weight:bold;box-shadow:0 2px 4px rgba(0,0,0,0.2);transition:all 0.2s;">
+                        Download PDF
+                    </a>
+                </div>
+                
+                <div style="background:#fff3cd;border:1px solid #ffeaa7;border-radius:6px;padding:15px;margin:25px 0;">
+                    <p style="margin:0;color:#856404;font-size:14px;">
+                        <strong>⚠️ Action Required:</strong> Please review this submission and contact the applicant within 24-48 hours 
+                        to confirm receipt and provide next steps in the application process.
+                    </p>
+                </div>
+            </div>
+            
+            <div style="background:#f8f9fa;padding:25px;text-align:center;border-top:1px solid #eee;">
+                <div style="margin-bottom:15px;">
+                    <img src="{LOGO_URL}" width="40" alt="LifeLine Logo" style="opacity:0.7;" />
+                </div>
+                <p style="margin:0;color:#888;font-size:14px;line-height:1.5;">
+                    <strong>LifeLine Insurance Services</strong><br>
+                    Professional Insurance Solutions | Trusted Coverage<br>
+                    This is an automated notification. Please do not reply to this email.
+                </p>
+                <p style="margin:10px 0 0 0;color:#aaa;font-size:12px;">
+                    © {datetime.now().year} LifeLine Insurance Services. All rights reserved.
+                </p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+def build_customer_confirmation_email(submission_type: str, data: Dict[str, Any], submission_id: str) -> str:
+    """Build customer confirmation email with same styling as admin email."""
+    customer_name = data.get('full_name' if submission_type == 'individual' else 'contact_person_name', 'Valued Customer')
+    
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Insurance Application Confirmation - LifeLine</title>
+    </head>
+    <body style="margin:0;padding:0;font-family:Arial,sans-serif;background:#f5f5f5;">
+        <div style="max-width:800px;margin:20px auto;background:white;border-radius:8px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+            <div style="background:white;padding:30px;text-align:center;">
+                <img src="{LOGO_URL}" width="80" alt="LifeLine Logo" style="display:block;margin:0 auto 15px auto;" />
+                <h1 style="color:{BRAND_COLOR};margin:0;font-size:28px;line-height:1.3;">Application Received Successfully!</h1>
+                <p style="color:{BRAND_COLOR_SECONDARY};margin:8px 0 0 0;font-size:16px;">Thank you for choosing LifeLine</p>
+            </div>
+            
+            <div style="padding:40px 30px;">
+                <div style="background:linear-gradient(135deg,#e8f5e8,#d4edda);padding:20px;border-radius:8px;margin-bottom:30px;border-left:4px solid #28a745;">
+                    <h2 style="color:#155724;margin:0 0 10px 0;font-size:18px;">✅ Confirmation Details</h2>
+                    <p style="color:#155724;margin:0;font-size:14px;">
+                        <strong>Application ID:</strong> {submission_id}<br>
+                        <strong>Submitted:</strong> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC<br>
+                        <strong>Type:</strong> {submission_type.title()} Insurance Application
+                    </p>
+                </div>
+                
+                <p style="color:#333;margin-bottom:25px;font-size:16px;line-height:1.6;">
+                    Dear <strong>{customer_name}</strong>,
+                </p>
+                
+                <p style="color:#555;margin-bottom:25px;font-size:16px;line-height:1.6;">
+                    We have successfully received your <strong>{submission_type}</strong> insurance application. 
+                    Thank you for choosing LifeLine Insurance Services for your insurance needs.
+                </p>
+                
+                <div style="background:linear-gradient(135deg,#f8f9fa,#e9ecef);padding:25px;border-radius:8px;margin:25px 0;border-left:4px solid {BRAND_COLOR};">
+                    <h3 style="color:#333;margin:0 0 15px 0;font-size:18px;">📋 What Happens Next?</h3>
+                    <div style="color:#555;font-size:14px;line-height:1.6;">
+                        <p style="margin:0 0 12px 0;"><strong>1. Review Process:</strong> Our underwriting team will review your application within 24-48 hours.</p>
+                        <p style="margin:0 0 12px 0;"><strong>1. Match Process:</strong> Your application will be sent to the best Insurance match.</p>
+                        <p style="margin:0 0 12px 0;"><strong>2. Contact:</strong> The insurance company will contact you via phone or email to discuss your application and answer any questions.</p>
+                        <p style="margin:0 0 12px 0;"><strong>3. Documentation:</strong> They may request additional documentation to complete your application.</p>
+                        <p style="margin:0;"><strong>4. Policy Issuance:</strong> Once approved, They will issue your policy and provide all necessary documents.</p>
+                    </div>
+                </div>
+                
+                <div style="background:#fff8e1;border:1px solid #ffc107;border-radius:6px;padding:20px;margin:25px 0;">
+                    <p style="margin:0 0 15px 0;color:#856404;font-size:16px;font-weight:bold;">📞 Need Help?</p>
+                    <p style="margin:0;color:#856404;font-size:14px;line-height:1.6;">
+                        If you have any questions about your application or need immediate assistance, please don't hesitate to contact our customer service team. 
+                        We're here to help you every step of the way.
+                    </p>
+                </div>
+                
+                <div style="text-align:center;margin:40px 0;">
+                    <p style="color:#666;font-size:14px;margin-bottom:20px;">
+                        Keep this email for your records. Your application reference number is: <strong>{submission_id[:8]}</strong>
+                    </p>
+                </div>
+                
+                <div style="background:#e8f5e8;border:1px solid #28a745;border-radius:6px;padding:20px;margin:25px 0;">
+                    <p style="margin:0 0 10px 0;color:#155724;font-size:16px;font-weight:bold;">🛡️ Your Protection, Our Priority</p>
+                    <p style="margin:0;color:#155724;font-size:14px;line-height:1.6;">
+                        At LifeLine Insurance Services, we're committed to providing you with comprehensive coverage 
+                        and exceptional service. Thank you for trusting us with your insurance needs.
+                    </p>
+                </div>
+            </div>
+            
+            <div style="background:#f8f9fa;padding:25px;text-align:center;border-top:1px solid #eee;">
+                <div style="margin-bottom:15px;">
+                    <img src="{LOGO_URL}" width="40" alt="LifeLine Logo" style="opacity:0.7;" />
+                </div>
+                <p style="margin:0;color:#888;font-size:14px;line-height:1.5;">
+                    <strong>LifeLine Insurance Services</strong><br>
+                    Professional Insurance Solutions | Trusted Coverage<br>
+                    This is an automated confirmation. Please save this email for your records.
+                </p>
+                <p style="margin:10px 0 0 0;color:#aaa;font-size:12px;">
+                    © {datetime.now().year} LifeLine Insurance Services. All rights reserved.
+                </p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+# ======================
+# Flask App Factory
+# ======================
 
 def create_app():
     """Application factory function."""
@@ -140,7 +849,6 @@ def create_app():
     )
 
     print("🔧 FLASK_ENV:", os.getenv('FLASK_ENV'))
-
 
     # === CORS Configuration ===
     allowed_origins = set()
@@ -212,487 +920,9 @@ def create_app():
 
     return app
 
-def normalize_field_key(field: str) -> str:
-    """Normalize field names to match form data keys."""
-    return (field.replace("(", "")
-                .replace(")", "")
-                .replace("/", "")
-                .replace(",", "")
-                .replace("  ", " ")
-                .replace(" ", "_")
-                .lower())
-
-def get_fields_for_type(submission_type: str) -> List[str]:
-    """Get field list based on submission type."""
-    return INDIVIDUAL_FIELDS if submission_type == "individual" else COMPANY_FIELDS
-
-def validate_submission_data(submission_type: str, data: Dict[str, Any]) -> tuple[bool, str]:
-    """Validate submission data."""
-    if submission_type not in ["individual", "company"]:
-        return False, "Invalid submission type. Must be 'individual' or 'company'."
-    
-    if not data:
-        return False, "Submission data cannot be empty."
-    
-    # Define required fields based on type
-    if submission_type == "individual":
-        required_fields = ["full_name", "email", "phone_number"]
-    else:
-        required_fields = ["company_name", "contact_email", "contact_phone_number"]
-    
-    for field in required_fields:
-        if not data.get(field, '').strip():
-            return False, f"Required field '{field}' is missing or empty."
-    
-    # Email validation
-    email_field = "email" if submission_type == "individual" else "contact_email"
-    email = data.get(email_field, '').strip()
-    if email and '@' not in email:
-        return False, f"Invalid email format in field: {email_field}"
-    
-    return True, ""
-
-def send_email_with_attachment(subject: str, html_content: str, recipients: List[str], 
-                              cc: List[str] = None, pdf_attachment: Optional[io.BytesIO] = None) -> bool:
-    """Send email with PDF attachment using SMTP_SSL."""
-    
-    # Ensure CC recipient is always included (only for admin emails)
-    all_recipients = recipients[:]
-    if cc:
-        all_recipients.extend(cc)
-    
-    msg = MIMEMultipart('mixed')
-    msg['From'] = f"LifeLine Africa Insurance <{SMTP_USERNAME}>"
-    msg['To'] = ", ".join(recipients)
-    msg['Subject'] = subject
-    
-    if cc:
-        msg['Cc'] = ", ".join(cc)
-    
-    # Attach HTML content
-    msg.attach(MIMEText(html_content, 'html', 'utf-8'))
-    
-    # Attach PDF if provided
-    if pdf_attachment:
-        pdf_attachment.seek(0)
-        part = MIMEApplication(
-            pdf_attachment.read(),
-            Name=f"insurance_submission_{datetime.now().date()}.pdf"
-        )
-        part['Content-Disposition'] = f'attachment; filename="insurance_submission_{datetime.now().date()}.pdf"'
-        msg.attach(part)
-    
-    try:
-        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.send_message(msg, to_addrs=all_recipients)
-        
-        logger.info(f"Email sent successfully to {len(recipients)} primary recipients and {len(cc) if cc else 0} CC recipients")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Failed to send email: {str(e)}")
-        return False
-
-def build_admin_email_html(submission_type: str, data: Dict[str, Any], submission_id: str) -> str:
-    """Build professional HTML email with submission data for admin team."""
-    fields = get_fields_for_type(submission_type)
-    
-    data_rows = ""
-    for field in fields:
-        field_key = normalize_field_key(field)
-        value = str(data.get(field_key, 'N/A'))
-        if len(value) > 100:
-            value = value[:97] + "..."
-        
-        data_rows += f"""
-            <tr>
-                <td style="padding:12px;font-weight:bold;color:#333;border-bottom:1px solid #eee;background:#f8f9fa;width:40%;">{field}</td>
-                <td style="padding:12px;color:#555;border-bottom:1px solid #eee;width:60%;">{value}</td>
-            </tr>
-        """
-    
-    pdf_link = f"http://localhost:5000/download-pdf/{submission_id}"
-    
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Insurance Submission - LifeLine Africa</title>
-    </head>
-    <body style="margin:0;padding:0;font-family:Arial,sans-serif;background:#f5f5f5;">
-        <div style="max-width:800px;margin:20px auto;background:white;border-radius:8px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
-            <div style="background:white;padding:30px;text-align:center;">
-                <img src="{LOGO_URL}" width="80" alt="LifeLine Logo" style="display:block;margin:0 auto 15px auto;" />
-                <h1 style="color:linear-gradient(135deg,{BRAND_COLOR},{BRAND_COLOR_SECONDARY});margin:0;font-size:28px;line-height:1.3;text-shadow:0 2px 4px rgba(0,0,0,0.3);">New Insurance Request</h1>
-                <p style="color:linear-gradient(135deg,{BRAND_COLOR},{BRAND_COLOR_SECONDARY});margin:8px 0 0 0;font-size:16px;">Submission Type: {submission_type.title()}</p>
-            </div>
-            
-            <div style="padding:40px 30px;">
-                <div style="background:linear-gradient(135deg,#f8f9fa,#e9ecef);padding:20px;border-radius:8px;margin-bottom:30px;border-left:4px solid {BRAND_COLOR};">
-                    <h2 style="color:#333;margin:0 0 10px 0;font-size:18px;">📋 Submission Details</h2>
-                    <p style="color:#666;margin:0;font-size:14px;">
-                        <strong>Submission ID:</strong> {submission_id}<br>
-                        <strong>Submitted:</strong> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC<br>
-                        <strong>Type:</strong> {submission_type.title()} Insurance Application
-                    </p>
-                </div>
-                
-                <p style="color:#555;margin-bottom:25px;font-size:16px;line-height:1.6;">
-                    A new <strong>{submission_type}</strong> insurance request has been submitted via LifeLine Africa Insurance Services. 
-                    Please review the complete details below and take appropriate action.
-                </p>
-                
-                <div style="overflow-x:auto;margin:25px 0;">
-                    <table style="width:100%;border-collapse:collapse;border:1px solid #ddd;border-radius:8px;overflow:hidden;background:white;">
-                        <thead>
-                            <tr style="background:linear-gradient(135deg,{BRAND_COLOR},{BRAND_COLOR_SECONDARY});">
-                                <th style="padding:15px;color:white;text-align:left;font-size:14px;font-weight:bold;">Field</th>
-                                <th style="padding:15px;color:white;text-align:left;font-size:14px;font-weight:bold;">Value</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {data_rows}
-                        </tbody>
-                    </table>
-                </div>
-                
-                <div style="text-align:center;margin:40px 0;">
-                    <a href="{pdf_link}" 
-                       style="display:inline-block;margin:0 10px 10px 10px;padding:15px 30px;background:{BRAND_COLOR};color:white;text-decoration:none;border-radius:6px;font-weight:bold;box-shadow:0 2px 4px rgba(0,0,0,0.2);transition:all 0.2s;">
-                        Download PDF
-                    </a>
-                </div>
-                
-                <div style="background:#fff3cd;border:1px solid #ffeaa7;border-radius:6px;padding:15px;margin:25px 0;">
-                    <p style="margin:0;color:#856404;font-size:14px;">
-                        <strong>⚠️ Action Required:</strong> Please review this submission and contact the applicant within 24-48 hours 
-                        to confirm receipt and provide next steps in the application process.
-                    </p>
-                </div>
-            </div>
-            
-            <div style="background:#f8f9fa;padding:25px;text-align:center;border-top:1px solid #eee;">
-                <div style="margin-bottom:15px;">
-                    <img src="{LOGO_URL}" width="40" alt="LifeLine Logo" style="opacity:0.7;" />
-                </div>
-                <p style="margin:0;color:#888;font-size:14px;line-height:1.5;">
-                    <strong>LifeLine Africa Insurance Services</strong><br>
-                    Professional Insurance Solutions | Trusted Coverage<br>
-                    This is an automated notification. Please do not reply to this email.
-                </p>
-                <p style="margin:10px 0 0 0;color:#aaa;font-size:12px;">
-                    © {datetime.now().year} LifeLine Africa Insurance Services. All rights reserved.
-                </p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-
-def build_customer_confirmation_email(submission_type: str, data: Dict[str, Any], submission_id: str) -> str:
-    """Build customer confirmation email with same styling as admin email."""
-    customer_name = data.get('full_name' if submission_type == 'individual' else 'contact_person_name', 'Valued Customer')
-    
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Insurance Application Confirmation - LifeLine Africa</title>
-    </head>
-    <body style="margin:0;padding:0;font-family:Arial,sans-serif;background:#f5f5f5;">
-        <div style="max-width:800px;margin:20px auto;background:white;border-radius:8px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1);">
-            <div style="background:white;padding:30px;text-align:center;">
-                <img src="{LOGO_URL}" width="80" alt="LifeLine Logo" style="display:block;margin:0 auto 15px auto;" />
-                <h1 style="color:{BRAND_COLOR};margin:0;font-size:28px;line-height:1.3;">Application Received Successfully!</h1>
-                <p style="color:{BRAND_COLOR_SECONDARY};margin:8px 0 0 0;font-size:16px;">Thank you for choosing LifeLine Africa</p>
-            </div>
-            
-            <div style="padding:40px 30px;">
-                <div style="background:linear-gradient(135deg,#e8f5e8,#d4edda);padding:20px;border-radius:8px;margin-bottom:30px;border-left:4px solid #28a745;">
-                    <h2 style="color:#155724;margin:0 0 10px 0;font-size:18px;">✅ Confirmation Details</h2>
-                    <p style="color:#155724;margin:0;font-size:14px;">
-                        <strong>Application ID:</strong> {submission_id}<br>
-                        <strong>Submitted:</strong> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC<br>
-                        <strong>Type:</strong> {submission_type.title()} Insurance Application
-                    </p>
-                </div>
-                
-                <p style="color:#333;margin-bottom:25px;font-size:16px;line-height:1.6;">
-                    Dear <strong>{customer_name}</strong>,
-                </p>
-                
-                <p style="color:#555;margin-bottom:25px;font-size:16px;line-height:1.6;">
-                    We have successfully received your <strong>{submission_type}</strong> insurance application. 
-                    Thank you for choosing LifeLine Africa Insurance Services for your insurance needs.
-                </p>
-                
-                <div style="background:linear-gradient(135deg,#f8f9fa,#e9ecef);padding:25px;border-radius:8px;margin:25px 0;border-left:4px solid {BRAND_COLOR};">
-                    <h3 style="color:#333;margin:0 0 15px 0;font-size:18px;">📋 What Happens Next?</h3>
-                    <div style="color:#555;font-size:14px;line-height:1.6;">
-                        <p style="margin:0 0 12px 0;"><strong>1. Review Process:</strong> Our underwriting team will review your application within 24-48 hours.</p>
-                        <p style="margin:0 0 12px 0;"><strong>2. Contact:</strong> We will contact you via phone or email to discuss your application and answer any questions.</p>
-                        <p style="margin:0 0 12px 0;"><strong>3. Documentation:</strong> We may request additional documentation to complete your application.</p>
-                        <p style="margin:0;"><strong>4. Policy Issuance:</strong> Once approved, we'll issue your policy and provide all necessary documents.</p>
-                    </div>
-                </div>
-                
-                <div style="background:#fff8e1;border:1px solid #ffc107;border-radius:6px;padding:20px;margin:25px 0;">
-                    <p style="margin:0 0 15px 0;color:#856404;font-size:16px;font-weight:bold;">📞 Need Help?</p>
-                    <p style="margin:0;color:#856404;font-size:14px;line-height:1.6;">
-                        If you have any questions about your application or need immediate assistance, please don't hesitate to contact our customer service team. 
-                        We're here to help you every step of the way.
-                    </p>
-                </div>
-                
-                <div style="text-align:center;margin:40px 0;">
-                    <p style="color:#666;font-size:14px;margin-bottom:20px;">
-                        Keep this email for your records. Your application reference number is: <strong>{submission_id[:8]}</strong>
-                    </p>
-                </div>
-                
-                <div style="background:#e8f5e8;border:1px solid #28a745;border-radius:6px;padding:20px;margin:25px 0;">
-                    <p style="margin:0 0 10px 0;color:#155724;font-size:16px;font-weight:bold;">🛡️ Your Protection, Our Priority</p>
-                    <p style="margin:0;color:#155724;font-size:14px;line-height:1.6;">
-                        At LifeLine Africa Insurance Services, we're committed to providing you with comprehensive coverage 
-                        and exceptional service. Thank you for trusting us with your insurance needs.
-                    </p>
-                </div>
-            </div>
-            
-            <div style="background:#f8f9fa;padding:25px;text-align:center;border-top:1px solid #eee;">
-                <div style="margin-bottom:15px;">
-                    <img src="{LOGO_URL}" width="40" alt="LifeLine Logo" style="opacity:0.7;" />
-                </div>
-                <p style="margin:0;color:#888;font-size:14px;line-height:1.5;">
-                    <strong>LifeLine Africa Insurance Services</strong><br>
-                    Professional Insurance Solutions | Trusted Coverage<br>
-                    This is an automated confirmation. Please save this email for your records.
-                </p>
-                <p style="margin:10px 0 0 0;color:#aaa;font-size:12px;">
-                    © {datetime.now().year} LifeLine Africa Insurance Services. All rights reserved.
-                </p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-
-class PDFGenerator:
-    def __init__(self):
-        self.styles = getSampleStyleSheet()
-        self.setup_custom_styles()
-        self.logo_path = self.download_logo()
-    
-    def download_logo(self) -> Optional[str]:
-        """Download and save logo for PDF use."""
-        try:
-            logo_path = "Logo.png"
-            urllib.request.urlretrieve(LOGO_URL, logo_path)
-            return logo_path
-        except Exception as e:
-            logger.warning(f"Could not download logo: {str(e)}")
-            return None
-    
-    def setup_custom_styles(self):
-        """Setup custom paragraph styles matching the brand."""
-        self.styles.add(ParagraphStyle(
-            name='CustomTitle',
-            parent=self.styles['Heading1'],
-            fontSize=28,
-            spaceAfter=20,
-            alignment=TA_CENTER,
-            textColor=colors.HexColor(BRAND_COLOR),
-            fontName='Helvetica-Bold'
-        ))
-        
-        self.styles.add(ParagraphStyle(
-            name='CustomSubtitle',
-            parent=self.styles['Heading2'],
-            fontSize=18,
-            spaceAfter=15,
-            alignment=TA_CENTER,
-            textColor=colors.HexColor('#666666'),
-            fontName='Helvetica'
-        ))
-        
-        self.styles.add(ParagraphStyle(
-            name='BrandHeader',
-            parent=self.styles['Normal'],
-            fontSize=12,
-            alignment=TA_CENTER,
-            textColor=colors.HexColor('#888888'),
-            fontName='Helvetica'
-        ))
-    
-    def generate_pdf(self, submission_type: str, data: Dict[str, Any], submission_id: str) -> io.BytesIO:
-        """Generate professional PDF document with brand styling."""
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(
-            buffer,
-            pagesize=A4,
-            rightMargin=72,
-            leftMargin=72,
-            topMargin=50,
-            bottomMargin=50,
-            title=f"{submission_type.title()} Insurance Submission - LifeLine Africa"
-        )
-        
-        story = []
-        
-        try:
-            if self.logo_path and os.path.exists(self.logo_path):
-                logo = Image(self.logo_path, width=80, height=80)
-                logo.hAlign = 'CENTER'
-                story.append(logo)
-                story.append(Spacer(1, 20))
-        except Exception as e:
-            logger.warning(f"Could not add logo to PDF: {str(e)}")
-        
-        company_name = Paragraph("LifeLine Africa Insurance Services", self.styles['BrandHeader'])
-        story.append(company_name)
-        story.append(Spacer(1, 10))
-        
-        title = Paragraph(f"{submission_type.title()} Insurance Submission", self.styles['CustomTitle'])
-        story.append(title)
-        
-        subtitle = Paragraph(f"Submission ID: {submission_id}", self.styles['CustomSubtitle'])
-        story.append(subtitle)
-        
-        submission_info = f"""
-        <para align="center" fontSize="10" textColor="#666666">
-        Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC<br/>
-        Document Type: Official Insurance Application<br/>
-        Status: Pending Review
-        </para>
-        """
-        story.append(Paragraph(submission_info, self.styles['Normal']))
-        story.append(Spacer(1, 30))
-        
-        fields = get_fields_for_type(submission_type)
-        table_data = [['Field', 'Value']]
-        
-        for field in fields:
-            field_key = normalize_field_key(field)
-            value = str(data.get(field_key, 'N/A'))
-            if len(value) > 60:
-                words = value.split(' ')
-                lines = []
-                current_line = []
-                current_length = 0
-                
-                for word in words:
-                    if current_length + len(word) + 1 <= 60:
-                        current_line.append(word)
-                        current_length += len(word) + 1
-                    else:
-                        if current_line:
-                            lines.append(' '.join(current_line))
-                        current_line = [word]
-                        current_length = len(word)
-                
-                if current_line:
-                    lines.append(' '.join(current_line))
-                
-                value = '<br/>'.join(lines)
-            
-            table_data.append([field, Paragraph(value, self.styles['Normal'])])
-        
-        table = Table(table_data, colWidths=[2.8*inch, 4.2*inch], repeatRows=1)
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(BRAND_COLOR)),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 15),
-            ('TOPPADDING', (0, 0), (-1, 0), 15),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.white),
-            ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
-            ('FONTNAME', (1, 1), (1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 1), (-1, -1), 10),
-            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#CCCCCC')),
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 12),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 12),
-            ('TOPPADDING', (0, 1), (-1, -1), 10),
-            ('BOTTOMPADDING', (0, 1), (-1, -1), 10),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F8F9FA')])
-        ]))
-        
-        story.append(table)
-        story.append(Spacer(1, 40))
-        
-        footer_text = f"""
-        <para align="center" fontSize="10" textColor="#888888">
-        <b>LifeLine Africa Insurance Services</b><br/>
-        Professional Insurance Solutions | Trusted Coverage<br/>
-        This document was generated automatically on {datetime.now().strftime('%Y-%m-%d at %H:%M:%S')} UTC<br/>
-        For inquiries, please contact our customer service team.
-        </para>
-        """
-        story.append(Paragraph(footer_text, self.styles['Normal']))
-        
-        story.append(Spacer(1, 20))
-        
-        copyright_text = f"""
-        <para align="center" fontSize="8" textColor="#AAAAAA">
-        © {datetime.now().year} LifeLine Africa Insurance Services. All rights reserved.<br/>
-        This document contains confidential information and is intended solely for the addressee.
-        </para>
-        """
-        story.append(Paragraph(copyright_text, self.styles['Normal']))
-        
-        doc.build(story)
-        buffer.seek(0)
-        
-        if self.logo_path and os.path.exists(self.logo_path):
-            try:
-                os.remove(self.logo_path)
-            except Exception:
-                pass
-        
-        return buffer
-
-def init_database(app):
-    """Initialize PostgreSQL database and create tables if needed."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Create submissions table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS submissions (
-                id VARCHAR(36) PRIMARY KEY,
-                submission_type VARCHAR(20) NOT NULL,
-                submission_data JSONB NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                email_sent BOOLEAN DEFAULT FALSE,
-                customer_email_sent BOOLEAN DEFAULT FALSE,
-                pdf_generated BOOLEAN DEFAULT FALSE,
-                pdf_path TEXT
-            )
-        """)
-        
-        # Create indexes
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_submissions_id ON submissions (id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_submissions_created_at ON submissions (created_at)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_submissions_type ON submissions (submission_type)")
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        logger.info("✅ Database tables created and indexes established")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Database initialization failed: {str(e)}")
-        return False
+# ======================
+# Route Registration
+# ======================
 
 def register_routes(app):
     @app.route("/health")
@@ -738,9 +968,12 @@ def register_routes(app):
                 return jsonify({"error": "Request body cannot be empty"}), 400
             
             submission_type = content.get("type", "").strip().lower()
-            data = content.get("data", {})
+            raw_data = content.get("data", {})
             
-            is_valid, error_message = validate_submission_data(submission_type, data)
+            # Clean the form data
+            data = clean_form_data(raw_data)
+            
+            is_valid, error_message = validate_submission_data_enhanced(submission_type, data)
             if not is_valid:
                 logger.warning(f"[{request_id}] Validation failed: {error_message}")
                 return jsonify({"error": error_message}), 400
@@ -822,7 +1055,7 @@ def register_routes(app):
                 customer_email_html = build_customer_confirmation_email(submission_type, data, submission.id)
                 
                 customer_email_sent = send_email_with_attachment(
-                    subject=f"Application Confirmation - LifeLine Africa Insurance ({submission.id[:8]})",
+                    subject=f"Application Confirmation - LifeLine Insurance ({submission.id[:8]})",
                     html_content=customer_email_html,
                     recipients=[customer_email]
                 )
@@ -963,7 +1196,7 @@ def register_routes(app):
                 <head>
                     <meta charset="UTF-8">
                     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <title>Submission {submission.id[:8]} - LifeLine Africa</title>
+                    <title>Submission {submission.id[:8]} - LifeLine</title>
                     <style>
                         * {{
                             margin: 0;
@@ -1197,48 +1430,13 @@ def register_routes(app):
                             color: #aaa;
                             font-size: 12px;
                         }}
-                        
-                        @media (max-width: 768px) {{
-                            .container {{
-                                margin: 10px;
-                                border-radius: 8px;
-                            }}
-                            
-                            .header {{
-                                padding: 30px 20px;
-                            }}
-                            
-                            .title {{
-                                font-size: 24px;
-                            }}
-                            
-                            .content {{
-                                padding: 30px 20px;
-                            }}
-                            
-                            .data-table {{
-                                font-size: 13px;
-                            }}
-                            
-                            .field-name,
-                            .field-value {{
-                                padding: 12px 10px;
-                            }}
-                            
-                            .btn {{
-                                padding: 12px 20px;
-                                margin: 5px;
-                                display: block;
-                                width: calc(100% - 10px);
-                            }}
-                        }}
                     </style>
                 </head>
                 <body>
                     <div class="container">
                         <div class="header">
                             <div class="header-content">
-                                <img src="{LOGO_URL}" alt="LifeLine Africa Logo" class="logo">
+                                <img src="{LOGO_URL}" alt="LifeLine Logo" class="logo">
                                 <h1 class="title">Insurance Submission</h1>
                                 <p class="subtitle">{submission.submission_type.title()} Application</p>
                                 <p class="submission-id">ID: {submission.id}</p>
@@ -1297,13 +1495,13 @@ def register_routes(app):
                         </div>
                         
                         <div class="footer">
-                            <img src="{LOGO_URL}" alt="LifeLine Africa Logo" class="footer-logo">
+                            <img src="{LOGO_URL}" alt="LifeLine Logo" class="footer-logo">
                             <p class="footer-text">
-                                <strong>LifeLine Africa Insurance Services</strong><br>
+                                <strong>LifeLine Insurance Services</strong><br>
                                 Professional Insurance Solutions | Trusted Coverage
                             </p>
                             <p class="footer-copyright">
-                                © {datetime.now().year} LifeLine Africa Insurance Services. All rights reserved.
+                                © {datetime.now().year} LifeLine Insurance Services. All rights reserved.
                             </p>
                         </div>
                     </div>
@@ -1324,7 +1522,7 @@ def register_routes(app):
             <head>
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>LifeLine Africa Insurance Services API</title>
+                <title>LifeLine Insurance Services API</title>
                 <style>
                     * {{
                         margin: 0;
@@ -1518,8 +1716,8 @@ def register_routes(app):
             <body>
                 <div class="container">
                     <div class="hero">
-                        <img src="{LOGO_URL}" alt="LifeLine Africa Logo" class="logo">
-                        <h1>LifeLine Africa Insurance Services</h1>
+                        <img src="{LOGO_URL}" alt="LifeLine Logo" class="logo">
+                        <h1>LifeLine Insurance Services</h1>
                         <p>Professional Insurance API for seamless application processing and management</p>
                     </div>
                     
@@ -1591,9 +1789,9 @@ def register_routes(app):
                     </div>
                     
                     <div class="footer">
-                        <img src="{LOGO_URL}" alt="LifeLine Africa Logo">
-                        <p><strong>LifeLine Africa Insurance Services API v2.0.0</strong></p>
-                        <p>© {datetime.now().year} LifeLine Africa Insurance Services. All rights reserved.</p>
+                        <img src="{LOGO_URL}" alt="LifeLine Logo">
+                        <p><strong>LifeLine Insurance Services API v2.0.0</strong></p>
+                        <p>© {datetime.now().year} LifeLine Insurance Services. All rights reserved.</p>
                     </div>
                 </div>
             </body>
@@ -1623,6 +1821,10 @@ def register_routes(app):
             "message": "An unexpected error occurred. Please try again later."
         }), 500
 
+# ======================
+# CLI Commands
+# ======================
+
 @click.command("init-db")
 @with_appcontext
 def init_db_command():
@@ -1637,6 +1839,10 @@ def init_db_command():
         click.echo("❌ Database initialization failed!")
         click.echo("Please check your PostgreSQL connection and try again.")
 
+# ======================
+# Application Entry Point
+# ======================
+
 if __name__ == "__main__":
     app = create_app()
     
@@ -1648,7 +1854,7 @@ if __name__ == "__main__":
             logger.error("❌ Database initialization failed")
             exit(1)
     
-    print("🚀 Starting LifeLine Africa Insurance Services API...")
+    print("🚀 Starting LifeLine Insurance Services API...")
     print(f"📧 Email notifications configured for {len(PRIMARY_RECIPIENTS)} primary recipients")
     print(f"📋 CC notifications will be sent to: {CC_RECIPIENT}")
     print("🌐 Server starting on http://localhost:5000")
