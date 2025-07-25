@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string, send_file
+from flask import Flask, app, request, jsonify, render_template_string, send_file
 import os
 import uuid
 import json
@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import logging
 from typing import Dict, Any, Optional, List
 import io
+from flask_cors import CORS
 from reportlab.lib.pagesizes import A4, inch
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
@@ -138,6 +139,44 @@ def create_app():
         MAX_CONTENT_LENGTH=16 * 1024 * 1024  # 16MB max file size
     )
 
+    # Configure CORS with specific origins for security
+    allowed_origins = []
+
+    # Add development origins
+    if os.getenv('FLASK_ENV') == 'development':
+        allowed_origins.extend([
+            'http://localhost:3000',
+            'http://localhost:3001',
+            'http://127.0.0.1:3000',
+            'http://127.0.0.1:3001',
+            'https://insurance.mylifeline.world/'
+        ])
+
+    # Add production origins from environment variable
+    production_origins = os.getenv('CORS_ORIGINS', '').split(',')
+    if production_origins and production_origins != ['']:
+        allowed_origins.extend([origin.strip() for origin in production_origins])
+
+    # Add your specific domains
+    allowed_origins.extend([
+        'https://yourfrontenddomain.com',
+        'https://www.yourfrontenddomain.com'
+    ])
+
+    # Remove empty strings and duplicates
+    allowed_origins = list(set([origin for origin in allowed_origins if origin]))
+
+    # Initialize CORS
+    CORS(app, 
+         origins=allowed_origins,
+         methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+         allow_headers=['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
+         supports_credentials=True,
+         max_age=86400  # Cache preflight requests for 24 hours
+    )
+
+    logger.info(f"✅ CORS configured for origins: {allowed_origins}")
+
     # ====================
     # Ensure Instance Folder Exists
     # ====================
@@ -153,10 +192,6 @@ def create_app():
         level=logging.INFO,
         format='%(asctime)s %(levelname)s %(name)s %(message)s'
     )
-    
-    # Optional: Assign logger for use elsewhere
-    global logger
-    logger = logging.getLogger(__name__)
 
     # ====================
     # Register CLI Commands
